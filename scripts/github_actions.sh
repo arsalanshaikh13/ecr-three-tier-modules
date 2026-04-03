@@ -9,8 +9,9 @@
 # git checkout -b service-discovery
 # git checkout nextjs-fargate
 
+git add .; git commit -m "fargate specific changes made to the code adding 2 more subnets and changing rds subnets"; git push
 
-gh workflow run .github/workflows/deploy.yml \
+gh workflow run deploy.yml \
   --ref main \
   -f build_frontend=true \
   -f get_frontend=false \

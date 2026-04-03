@@ -315,6 +315,15 @@ variable "pri_sub_4b_cidr" {
   type        = string
 }
 
+variable "pri_sub_5a_cidr" {
+  description = "CIDR block for private subnet 5 availability zone b cidr."
+  type        = string
+}
+variable "pri_sub_6b_cidr" {
+  description = "CIDR block for private subnet 6 availability zone a cidr."
+  type        = string
+}
+
 variable "project_name" {
   description = "Name for project name."
   type        = string
