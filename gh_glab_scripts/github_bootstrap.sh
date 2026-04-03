@@ -17,8 +17,9 @@ echo "🚀 Bootstrapping $REPO_NAME..."
  
 
 # 2. Set AWS Environment Variables (Repo Level)
-gh variable set ENV_VAR --body "dev" --repo "$GH_USER/$REPO_NAME"
-gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME"
+# gh variable set ENV_VAR --body "dev" --repo "$GH_USER/$REPO_NAME"
+# gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME"
+gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME"
 
 # 3. Create 'production' Environment & Secrets
 # echo "Creating production env..."
@@ -27,7 +28,7 @@ gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME"
 # gh secret set AWS_ACCESS_KEY --body "AKIA..." --repo "$GH_USER/$REPO_NAME" --env production
 
 # 4. Initialize Local Git
-# git init
+# git init 
 # git add .
 # git commit -m "Initial commit from bootstrapper"
 # git branch -M main

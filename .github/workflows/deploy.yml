@@ -39,7 +39,7 @@ on:
 env:
   AWS_REGION: us-east-1
   # These are prefixes. The matrix will append '-frontend' or '-backend' to them
-  ECS_CLUSTER: ecs-cluster-${{ vars.ENV_VAR }}
+  ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
 
 permissions:
   id-token: write
@@ -226,7 +226,7 @@ jobs:
         id: build-seeder
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lirw-ecr-database-seed-repo-${{ vars.ENV_VAR }}
+          ECR_REPOSITORY: lirw-ecr-database-seeder-repo-${{ vars.ENV_VAR }}
           IMAGE_TAG: ${{ github.sha }} # Use SHA for a unique tag
         run: |
           cd lirw-three-tier/database-seeder
