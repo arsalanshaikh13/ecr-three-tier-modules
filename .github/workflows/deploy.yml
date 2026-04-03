@@ -250,7 +250,7 @@ jobs:
         with:
           task-definition: task-definition-seeder.json
           # CRITICAL: Change this to match the container name in your Terraform db-seeder task definition!
-          container-name: mysql-seeder
+          container-name: ${{ vars.PROJECT_NAME }}-db-seeder-${{ vars.ENV_VAR }}
           image: ${{ steps.build-seeder.outputs.image }}
 
       - name: Register new Task Definition
