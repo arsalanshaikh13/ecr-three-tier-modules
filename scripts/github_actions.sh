@@ -10,14 +10,21 @@
 # git checkout nextjs-fargate
 
 git add .; git commit -m "fargate specific changes made to the code adding 2 more subnets and changing rds subnets"; git push
+git tag tf-module-fargate 
+git push origin tf-module-fargate
 
-gh workflow run deploy.yml \
-  --ref main \
-  -f build_frontend=false \
-  -f get_frontend=false \
-  -f build_backend=false \
-  -f get_backend=false \
-  -f run_seeding=true
+git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
+git tag -l "circleci-*" | xargs -I {} git push origin --delete {}
+git tag -l "lirw-*" | xargs git tag -d
+git tag -l "circleci-*" | xargs git tag -d
+
+# gh workflow run deploy.yml \
+#   --ref main \
+#   -f build_frontend=false \
+#   -f get_frontend=false \
+#   -f build_backend=false \
+#   -f get_backend=false \
+#   -f run_seeding=true
 
 #   # Variables
 # ORG="arsalanshaikh13"
