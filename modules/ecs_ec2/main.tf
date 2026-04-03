@@ -116,7 +116,7 @@ resource "aws_ecs_task_definition" "backend" {
       memory    = var.backend_memory
       cpu       = var.backend_cpu
       
-      portMfrontendings = [
+      portMappings = [
         {
           containerPort = var.backend_tg_port
           # hostPort      = 27017
@@ -191,7 +191,7 @@ resource "aws_ecs_task_definition" "frontend" {
       memory    = var.frontend_memory
       cpu       = var.frontend_cpu
       
-      portMfrontendings = [
+      portMappings = [
         {
           containerPort = var.frontend_tg_port
           # hostPort      = 80
