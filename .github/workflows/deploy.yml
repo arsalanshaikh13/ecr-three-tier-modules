@@ -177,7 +177,7 @@ jobs:
 
       - name: Download current ECS task definition
         env:
-          TASK_DEF_NAME: lirw-ecr-${{ matrix.component }}
+          TASK_DEF_NAME: ${{ vars.PROJECT_NAME }}-${{ matrix.component }}
         run: |
           aws ecs describe-task-definition \
             --task-definition $TASK_DEF_NAME \
@@ -188,7 +188,7 @@ jobs:
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition-${{ matrix.component }}.json
-          container-name: lirw_ecr_${{ matrix.component }}
+          container-name: ${{ vars.PROJECT_NAME }}_${{ matrix.component }}
           image: ${{ steps.build-image.outputs.image || steps.determine-image.outputs.final_image  }}
 
       - name: Deploy Amazon ECS task definition
@@ -241,7 +241,7 @@ jobs:
       - name: Download current Seeder task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition db-seeder-${{ vars.ENV_VAR }} \
+            --task-definition ${{ vars.PROJECT_NAME }}-db-seeder-${{ vars.ENV_VAR }} \
             --query taskDefinition > task-definition-seeder.json
 
       - name: Render new task definition with new image
