@@ -13,9 +13,9 @@ git add .; git commit -m "fargate specific changes made to the code adding 2 mor
 
 gh workflow run deploy.yml \
   --ref main \
-  -f build_frontend=true \
+  -f build_frontend=false \
   -f get_frontend=false \
-  -f build_backend=true \
+  -f build_backend=false \
   -f get_backend=false \
   -f run_seeding=true
 
