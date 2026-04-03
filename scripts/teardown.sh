@@ -3,12 +3,12 @@
 # ==========================================================
 # Configuration: Update these to match your environment
 # ==========================================================
-
-CLUSTER_NAME="ecs-cluster-dev"
+cd root
+CLUSTER_NAME="lirw-ecs-cluster-dev"
 # Define your services as an array
 SERVICES=("backend-service" "frontend-service" )
 # ASG_NAME="ecs-asg-dev"
-ASG_NAMES=("ecs-asg-backend-dev" "ecs-asg-frontend-dev" )
+ASG_NAMES=("lirw-ecs-asg-backend-dev" "lirw-ecs-asg-frontend-dev" )
 REGION="us-east-1"
 
 echo "======================================================"
@@ -109,7 +109,7 @@ for ASG_NAME in "${ASG_NAMES[@]}"; do
     echo "  ✅ No running instances found in $ASG_NAME."
   fi
 done
-# Step 3: Trigger Terraform
+# # Step 3: Trigger Terraform
 echo "======================================================"
 echo " 🌪️  Infrastructure is clear. Triggering Terraform... "
 echo "======================================================"

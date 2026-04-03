@@ -3,7 +3,7 @@ output "db_dns_address" {
   value = aws_db_instance.mysql_db.address
 }
 output "db_password" {
-  value = aws_db_instance.mysql_db.password
+  value     = aws_db_instance.mysql_db.password
   sensitive = true
 }
 

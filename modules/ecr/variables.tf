@@ -4,7 +4,7 @@ variable "common_tags" {
 }
 variable "ecr_names" {
   description = "ecr names to be used for function for_each."
-  type = set(string)
+  type        = set(string)
 }
 
 variable "env_suffix" {

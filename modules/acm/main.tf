@@ -10,8 +10,8 @@ data "aws_route53_zone" "main" {
 resource "aws_acm_certificate" "app_cert" {
   domain_name       = var.domain_name
   validation_method = "DNS"
-#   subject_alternative_names = ["*.${var.domain_name}"]
-  subject_alternative_names = ["www.${var.domain_name}","api.${var.domain_name}"]
+  #   subject_alternative_names = ["*.${var.domain_name}"]
+  subject_alternative_names = ["www.${var.domain_name}", "api.${var.domain_name}"]
 
   lifecycle {
     create_before_destroy = true

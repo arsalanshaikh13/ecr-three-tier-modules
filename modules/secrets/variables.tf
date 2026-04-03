@@ -11,7 +11,7 @@ variable "env_suffix" {
 variable "db_password" {
   description = "Sensitive value for db password."
   type        = string
-  sensitive = true
+  sensitive   = true
 }
 
 variable "project_name" {

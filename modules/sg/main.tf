@@ -43,10 +43,10 @@ resource "aws_security_group" "backend_alb_sg" {
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "http access"
-    from_port   = var.backend_alb_port
-    to_port     = var.backend_alb_port
-    protocol    = "tcp"
+    description     = "http access"
+    from_port       = var.backend_alb_port
+    to_port         = var.backend_alb_port
+    protocol        = "tcp"
     security_groups = [aws_security_group.ecs_node_frontend_sg.id]
   }
 
@@ -71,12 +71,12 @@ resource "aws_security_group" "ecs_node_frontend_sg" {
   name        = "ecs-node-frontend-sg-${var.env_suffix}"
   description = "SG for ECS EC2 nodes frontend"
   vpc_id      = var.vpc_id
-  
+
   ingress {
-    description = "node port access"
-    from_port   = var.frontend_tg_port
-    to_port     = var.frontend_tg_port
-    protocol    = "tcp"
+    description     = "node port access"
+    from_port       = var.frontend_tg_port
+    to_port         = var.frontend_tg_port
+    protocol        = "tcp"
     security_groups = [aws_security_group.frontend_alb_sg.id]
   }
 
@@ -93,18 +93,18 @@ resource "aws_security_group" "ecs_node_backend_sg" {
   name        = "ecs-node-backend-sg-${var.env_suffix}"
   description = "SG for ECS EC2 nodes backend"
   vpc_id      = var.vpc_id
-  
-    # 2. NEW: Allow the Internal NLB to route traffic to the Mongo Container
+
+  # 2. NEW: Allow the Internal NLB to route traffic to the Mongo Container
 
   ingress {
-    description = "node port access"
-    from_port   = var.backend_tg_port
-    to_port     = var.backend_tg_port
-    protocol    = "tcp"
+    description     = "node port access"
+    from_port       = var.backend_tg_port
+    to_port         = var.backend_tg_port
+    protocol        = "tcp"
     security_groups = [aws_security_group.backend_alb_sg.id]
   }
 
-  
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -117,16 +117,16 @@ resource "aws_security_group" "ecs_node_rds_sg" {
   name        = "ecs-node-rds-sg-${var.env_suffix}"
   description = "SG for ECS EC2 nodes rds"
   vpc_id      = var.vpc_id
-  
-    # since i am using aws cli command to create task instead of service
-    # aws will randomly assign within the ec2 instances attached to cluster
-    # those ec2 instance can be from frontend or backend since i am using host network
-    # the task container inherits the security group of the ec2 instance it lands on or runs on during seeding operation
+
+  # since i am using aws cli command to create task instead of service
+  # aws will randomly assign within the ec2 instances attached to cluster
+  # those ec2 instance can be from frontend or backend since i am using host network
+  # the task container inherits the security group of the ec2 instance it lands on or runs on during seeding operation
   ingress {
-    description = "db port access"
-    from_port   = var.db_port
-    to_port     = var.db_port
-    protocol    = "tcp"
+    description     = "db port access"
+    from_port       = var.db_port
+    to_port         = var.db_port
+    protocol        = "tcp"
     security_groups = [aws_security_group.ecs_node_backend_sg.id]
   }
   # Add this block to allow Frontend nodes to reach RDS (so the seeder works anywhere)

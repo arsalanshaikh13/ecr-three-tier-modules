@@ -22,8 +22,8 @@ resource "aws_route53_record" "root_alias" {
 }
 # 2. Subdomains (www, books, authors)
 resource "aws_route53_record" "subdomain_alias" {
-  
-  
+
+
   zone_id = data.aws_route53_zone.main.zone_id
   name    = "www.${var.domain_name}"
   type    = "A"
@@ -36,8 +36,8 @@ resource "aws_route53_record" "subdomain_alias" {
 }
 # 2. Subdomains (www, books, authors)
 resource "aws_route53_record" "api_alias" {
-  
-  
+
+
   zone_id = data.aws_route53_zone.main.zone_id
   name    = "api.${var.domain_name}"
   type    = "A"

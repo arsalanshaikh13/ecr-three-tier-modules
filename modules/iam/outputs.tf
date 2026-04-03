@@ -1,5 +1,5 @@
 output "ecs_node_profile_name" {
-    value = aws_iam_instance_profile.ecs_node_profile.name
+  value = aws_iam_instance_profile.ecs_node_profile.name
 }
 
 output "ecs_task_execution_role_arn" {

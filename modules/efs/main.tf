@@ -15,7 +15,7 @@ resource "aws_efs_file_system" "backend_data" {
 # You need one of these for EACH private subnet your MongoDB task might run in.
 resource "aws_efs_mount_target" "backend_mount_target_1" {
   file_system_id  = aws_efs_file_system.backend_data.id
-  subnet_id       = var.pri_sub_3a_id # Change to your actual subnet ID
+  subnet_id       = var.pri_sub_3a_id              # Change to your actual subnet ID
   security_groups = [aws_security_group.efs_sg.id] # We will define this next
 }
 
@@ -31,12 +31,12 @@ resource "aws_security_group" "efs_sg" {
   vpc_id      = var.vpc_id
 
   ingress {
-    description     = "Allow NFS traffic from MongoDB Fargate tasks"
-    from_port       = 2049
-    to_port         = 2049
-    protocol        = "tcp"
+    description = "Allow NFS traffic from MongoDB Fargate tasks"
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
     # IMPORTANT: This must be the Security Group attached to your MongoDB ECS Service!
-    security_groups = [var.ecs_node_backend_sg_id] 
+    security_groups = [var.ecs_node_backend_sg_id]
   }
 
   egress {

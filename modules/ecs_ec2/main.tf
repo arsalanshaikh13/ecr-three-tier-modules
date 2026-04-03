@@ -9,10 +9,10 @@ resource "aws_ecs_cluster" "cluster" {
   }
   configuration {
     execute_command_configuration {
-      logging = "OVERRIDE" 
+      logging = "OVERRIDE"
       log_configuration {
         # Set to false unless you also create and attach an aws_kms_key
-        cloud_watch_encryption_enabled = false 
+        cloud_watch_encryption_enabled = false
         cloud_watch_log_group_name     = var.ecs_exec_logs_name
       }
     }
@@ -20,6 +20,25 @@ resource "aws_ecs_cluster" "cluster" {
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-cluster-${var.env_suffix}"
   })
+}
+
+# NOTE:
+# Keep cluster capacity-provider attachment in the same module as aws_ecs_cluster.
+# This fixes destroy-order errors seen when attachment was managed in ASG:
+# "deleting ECS Cluster Capacity Providers ... ClientException: Cluster not ACTIVE".
+resource "aws_ecs_cluster_capacity_providers" "cluster_attach" {
+  cluster_name = aws_ecs_cluster.cluster.name
+
+  capacity_providers = [
+    var.ec2_provider_frontend_name,
+    var.ec2_provider_backend_name
+  ]
+
+  default_capacity_provider_strategy {
+    base              = 1
+    weight            = 100
+    capacity_provider = var.ec2_provider_backend_name
+  }
 }
 
 
@@ -33,20 +52,20 @@ resource "aws_ecs_task_definition" "db_seeder" {
   requires_compatibilities = ["EC2"]
   # network_mode             = "host" # Required for security group assignment
   # network_mode             = "bridge" # Required for security group assignment
-  network_mode             = var.ecs_network_mode_db # Required for security group assignment
-  cpu                      = var.db_cpu
-  memory                   = var.db_memory
-  execution_role_arn       = var.ecs_task_execution_role_arn
-  task_role_arn            = var.ecs_task_role_arn
+  network_mode       = var.ecs_network_mode_db # Required for security group assignment
+  cpu                = var.db_cpu
+  memory             = var.db_memory
+  execution_role_arn = var.ecs_task_execution_role_arn
+  task_role_arn      = var.ecs_task_role_arn
 
 
   container_definitions = jsonencode([
     {
-      name      = "${var.project_name}-db-seeder-${var.env_suffix}"
-    #   image     = "alpine/mysql:seeder-latest" # Replace with your seeder image tag
+      name = "${var.project_name}-db-seeder-${var.env_suffix}"
+      #   image     = "alpine/mysql:seeder-latest" # Replace with your seeder image tag
       image     = var.db_image # Replace with your seeder image tag
       essential = true
-      
+
       environment = [
         { name = "DB_DATABASE", value = var.db_name },
         { name = "DB_USER", value = var.db_username }
@@ -65,7 +84,7 @@ resource "aws_ecs_task_definition" "db_seeder" {
           "awslogs-group"         = "/ecs/${var.project_name}-database-seeder-${var.env_suffix}"
           "awslogs-region"        = var.region
           "awslogs-stream-prefix" = "seeder"
-          "awslogs-create-group": "true",
+          "awslogs-create-group" : "true",
 
         }
       }
@@ -76,7 +95,7 @@ resource "aws_ecs_task_definition" "db_seeder" {
 
 
 resource "aws_ecs_task_definition" "backend" {
-  family                   = "${var.project_name}-backend"
+  family = "${var.project_name}-backend"
   # network_mode             = "bridge"
   # network_mode             = "host"
   network_mode             = var.ecs_network_mode_frontend
@@ -84,8 +103,8 @@ resource "aws_ecs_task_definition" "backend" {
   execution_role_arn       = var.ecs_task_execution_role_arn
   task_role_arn            = var.ecs_task_role_arn
 
-  memory    = var.backend_memory
-  cpu       = var.backend_cpu
+  memory = var.backend_memory
+  cpu    = var.backend_cpu
 
 
   # Provisions a var Docker volume on the EC2 host's EBS drive
@@ -94,7 +113,7 @@ resource "aws_ecs_task_definition" "backend" {
     docker_volume_configuration {
       scope         = "shared"
       autoprovision = true
-      driver        = "var"
+      driver        = "local"
     }
   }
   volume {
@@ -102,7 +121,7 @@ resource "aws_ecs_task_definition" "backend" {
     docker_volume_configuration {
       scope         = "shared"
       autoprovision = true
-      driver        = "var"
+      driver        = "local"
     }
   }
 
@@ -111,19 +130,19 @@ resource "aws_ecs_task_definition" "backend" {
       name      = "${var.project_name}_backend"
       image     = var.backend_image
       essential = true
-      
+
       # Resource limits moved to the container level to prevent host OOM issues
-      memory    = var.backend_memory
-      cpu       = var.backend_cpu
-      
+      memory = var.backend_memory
+      cpu    = var.backend_cpu
+
       portMappings = [
         {
           containerPort = var.backend_tg_port
           # hostPort      = 27017
-          protocol      = "tcp"
+          protocol = "tcp"
         }
       ]
-      
+
       environment = [
         # { name = "DB_HOST", value = aws_db_instance.mysql_db.address },
         { name = "DB_DATABASE", value = var.db_name },
@@ -145,10 +164,10 @@ resource "aws_ecs_task_definition" "backend" {
       ]
 
       healthCheck = {
-        command     = ["CMD-SHELL", "wget --no-verbose --tries=3 --spider http://127.0.0.1:${var.backend_tg_port}/${var.backend_health_check_path} || exit 1"]
-        interval    = 10
-        timeout     = 5
-        retries     = 5
+        command  = ["CMD-SHELL", "wget --no-verbose --tries=3 --spider http://127.0.0.1:${var.backend_tg_port}${var.backend_health_check_path} || exit 1"]
+        interval = 10
+        timeout  = 5
+        retries  = 5
       }
 
       logConfiguration = {
@@ -157,7 +176,7 @@ resource "aws_ecs_task_definition" "backend" {
           "awslogs-group"         = "/ecs/${var.project_name}-backend-${var.env_suffix}"
           "awslogs-region"        = var.region
           "awslogs-stream-prefix" = "ecs"
-          "awslogs-create-group": "true"
+          "awslogs-create-group" : "true"
         }
       }
     }
@@ -172,16 +191,16 @@ resource "aws_ecs_task_definition" "backend" {
 }
 
 resource "aws_ecs_task_definition" "frontend" {
-  family                   = "${var.project_name}-frontend"
+  family = "${var.project_name}-frontend"
   # network_mode             = "bridge"
-  network_mode             = var.ecs_network_mode_frontend
+  network_mode = var.ecs_network_mode_frontend
   # network_mode             = "host"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = var.ecs_task_execution_role_arn
   task_role_arn            = var.ecs_task_role_arn
 
-  memory    = var.frontend_memory
-  cpu       = var.frontend_cpu
+  memory = var.frontend_memory
+  cpu    = var.frontend_cpu
 
   container_definitions = jsonencode([
     {
@@ -190,26 +209,26 @@ resource "aws_ecs_task_definition" "frontend" {
       essential = true
       memory    = var.frontend_memory
       cpu       = var.frontend_cpu
-      
+
       portMappings = [
         {
           containerPort = var.frontend_tg_port
           # hostPort      = 80
-          protocol      = "tcp"
+          protocol = "tcp"
         }
       ]
 
       environment = [
         { name = "BACKEND_ALB_URL", value = var.backend_api_name },
         { name = "VITE_API_URL", value = "/api" },
-        
+
       ]
 
       healthCheck = {
         # curl command is missing in alpine linux
         # command     = ["CMD-SHELL", "curl -f http://varhost:3000 || exit 1"]
         # Using wget (native to Alpine), 127.0.0.1 (forces IPv4), and the new lightweight endpoint
-        command     = ["CMD-SHELL", "wget --no-verbose --tries=3 --spider http://127.0.0.1:${var.frontend_tg_port}/${var.frontend_health_check_path} || exit 1"]
+        command     = ["CMD-SHELL", "wget --no-verbose --tries=3 --spider http://127.0.0.1:${var.frontend_tg_port}${var.frontend_health_check_path} || exit 1"]
         interval    = 30
         timeout     = 10
         retries     = 3
@@ -222,7 +241,7 @@ resource "aws_ecs_task_definition" "frontend" {
           "awslogs-group"         = "/ecs/${var.project_name}-frontend-${var.env_suffix}"
           "awslogs-region"        = var.region
           "awslogs-stream-prefix" = "ecs"
-          "awslogs-create-group": "true"
+          "awslogs-create-group" : "true"
         }
       }
     }
@@ -257,7 +276,7 @@ resource "aws_ecs_service" "backend" {
 
 
   timeouts {
-    delete = "5m" 
+    delete = "5m"
   }
 
   capacity_provider_strategy {
@@ -267,11 +286,11 @@ resource "aws_ecs_service" "backend" {
 
   }
 
-    # this only works for awsvpc network mode not host network mode
+  # this only works for awsvpc network mode not host network mode
   network_configuration {
-    subnets          = [var.pri_sub_3a_id, var.pri_sub_4b_id] 
+    subnets          = [var.pri_sub_3a_id, var.pri_sub_4b_id]
     security_groups  = [var.ecs_node_backend_sg_id]
-    assign_public_ip = false 
+    assign_public_ip = false
     # assign_public_ip = true # it only works with fargate
   }
 
@@ -279,7 +298,7 @@ resource "aws_ecs_service" "backend" {
   health_check_grace_period_seconds = 60
 
 
-  deployment_minimum_healthy_percent = 100 
+  deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
   # lifecycle {
@@ -292,8 +311,10 @@ resource "aws_ecs_service" "backend" {
 
   # Ensure the tasks are distributed across your EC2 instances (if running multiple)
   placement_constraints {
-    type       = "distinctInstance"
+    type = "distinctInstance"
   }
+
+  depends_on = [aws_ecs_cluster_capacity_providers.cluster_attach]
 }
 
 # The Next.js App ECS Service
@@ -313,7 +334,7 @@ resource "aws_ecs_service" "frontend" {
   }
 
   timeouts {
-    delete = "5m" 
+    delete = "5m"
   }
 
   capacity_provider_strategy {
@@ -325,24 +346,24 @@ resource "aws_ecs_service" "frontend" {
 
   # this only works for awsvpc network mode not host network mode
   network_configuration {
-    subnets          = [var.pri_sub_3a_id, var.pri_sub_4b_id] 
+    subnets          = [var.pri_sub_3a_id, var.pri_sub_4b_id]
     security_groups  = [var.ecs_node_frontend_sg_id]
-    assign_public_ip = false 
+    assign_public_ip = false
     # assign_public_ip = true # it only works with fargate
   }
 
   health_check_grace_period_seconds = 60
 
-  
-  deployment_minimum_healthy_percent = 100 
+
+  deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
-  lifecycle {
-    ignore_changes = [
-      task_definition,
-      # desired_count
-    ]
-  }
+  # lifecycle {
+  #   ignore_changes = [
+  #     task_definition,
+  #     # desired_count
+  #   ]
+  # }
 
 
   # Optional: Spread tasks evenly across Availability Zones
@@ -350,4 +371,6 @@ resource "aws_ecs_service" "frontend" {
     type  = "spread"
     field = "attribute:ecs.availability-zone"
   }
+
+  depends_on = [aws_ecs_cluster_capacity_providers.cluster_attach]
 }

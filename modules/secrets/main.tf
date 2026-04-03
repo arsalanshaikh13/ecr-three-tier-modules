@@ -5,10 +5,10 @@
 # MongoDB Root Password
 
 resource "aws_secretsmanager_secret" "rdsdb_root_password" {
-  name        = "/${var.project_name}/${var.env_suffix}/rds-root-password"
-  description = "Root password for the rds container"
-  recovery_window_in_days = 0 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-rdsdb-password-secret" })
+  name                    = "/${var.project_name}/${var.env_suffix}/rds-root-password"
+  description             = "Root password for the rds container"
+  recovery_window_in_days = 0
+  tags                    = merge(var.common_tags, { Name = "${var.project_name}-rdsdb-password-secret" })
 
 
 }

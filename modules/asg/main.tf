@@ -9,11 +9,11 @@ data "aws_ssm_parameter" "ecs_optimized_ami" {
 locals {
   ecs_apps = {
     frontend = {
-    #   instance_type = "c7i-flex.large"
+      #   instance_type = "c7i-flex.large"
       instance_type = var.frontend_instance_type
       # subnets       = [var.pub_sub_1a_id, var.pub_sub_2b_id]
-      subnets       = [var.pri_sub_3a_id, var.pri_sub_4b_id]
-      sg_id         = var.ecs_node_frontend_sg_id
+      subnets = [var.pri_sub_3a_id, var.pri_sub_4b_id]
+      sg_id   = var.ecs_node_frontend_sg_id
       min     = var.front_asg_min_size
       max     = var.front_asg_max_size
       desired = var.front_asg_desired_capacity
@@ -23,13 +23,13 @@ locals {
       instance_type = var.backend_instance_type
       subnets       = [var.pri_sub_3a_id, var.pri_sub_4b_id]
       # subnets       = [var.pub_sub_1a_id, var.pub_sub_2b_id]
-      sg_id         = var.ecs_node_backend_sg_id
+      sg_id   = var.ecs_node_backend_sg_id
       min     = var.back_asg_min_size
       max     = var.back_asg_max_size
       desired = var.back_asg_desired_capacity
 
     }
-    
+
   }
 }
 
@@ -59,10 +59,10 @@ resource "aws_autoscaling_group" "ecs_asg" {
 
   name                = "${var.project_name}-asg-${each.key}-${var.env_suffix}"
   vpc_zone_identifier = each.value.subnets
-  
-#   min_size         = 1
-#   max_size         = 2
-#   desired_capacity = 1
+
+  #   min_size         = 1
+  #   max_size         = 2
+  #   desired_capacity = 1
   min_size         = each.value.min
   max_size         = each.value.max
   desired_capacity = each.value.desired
@@ -91,7 +91,7 @@ resource "aws_autoscaling_group" "ecs_asg" {
 
 resource "aws_ecs_capacity_provider" "ec2_provider" {
   for_each = local.ecs_apps
-  name = "ec2-capacity-provider-${each.key}-${var.env_suffix}"
+  name     = "ec2-capacity-provider-${each.key}-${var.env_suffix}"
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.ecs_asg[each.key].arn
@@ -99,32 +99,16 @@ resource "aws_ecs_capacity_provider" "ec2_provider" {
 
     managed_scaling {
       status          = "ENABLED"
-      target_capacity = 100 
+      target_capacity = 100
     }
   }
 }
 
-# i have already defined separately inside ecs service capacity provider strategy so not needed here
-resource "aws_ecs_cluster_capacity_providers" "cluster_attach" {
-  for_each = local.ecs_apps
-
-  cluster_name = var.app_cluster_name
-# Register BOTH providers at once
-  capacity_providers = [
-    aws_ecs_capacity_provider.ec2_provider[each.key].name,
-    # aws_ecs_capacity_provider.ec2_provider["backend"].name
-  ]
-  
-  # capacity_providers = [
-  #   aws_ecs_capacity_provider.ec2_provider[each.key].name,
-  # ]
-
-  default_capacity_provider_strategy {
-    base              = 1
-    weight            = 100
-    capacity_provider = aws_ecs_capacity_provider.ec2_provider[each.key].name
-  }
-}
+# NOTE:
+# Do not manage aws_ecs_cluster_capacity_providers in this ASG module.
+# Keeping cluster attachment here caused destroy-order failures:
+# "PutClusterCapacityProviders ... ClientException: Cluster not ACTIVE".
+# Cluster attachment is intentionally managed in modules/ecs_ec2/main.tf with the cluster.
 
 
 
@@ -133,16 +117,16 @@ resource "aws_ecs_cluster_capacity_providers" "cluster_attach" {
 resource "aws_appautoscaling_target" "ecs_target" {
   for_each = {
     frontend = {
-      min  = var.front_scale_min_cap
-      max  = var.front_scale_max_cap
-    #   min  = 2
-    #   max  = 10
-      name = var.frontend_service_name    # Links to your frontend service
+      min = var.front_scale_min_cap
+      max = var.front_scale_max_cap
+      #   min  = 2
+      #   max  = 10
+      name = var.frontend_service_name # Links to your frontend service
     }
     backend = {
       min  = var.back_scale_min_cap
       max  = var.back_scale_max_cap
-      name = var.backend_service_name  # Links to your backend service
+      name = var.backend_service_name # Links to your backend service
     }
   }
 

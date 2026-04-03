@@ -72,20 +72,20 @@ resource "aws_iam_policy" "ecs_task_secrets_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "AllowReadingSecretsManager"
-        Action   = ["secretsmanager:GetSecretValue",
-                    "secretsmanager:PutSecretValue",
-                    "secretsmanager:DescribeSecret"
-                  ]
-        Effect   = "Allow"
+        Sid = "AllowReadingSecretsManager"
+        Action = ["secretsmanager:GetSecretValue",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Effect = "Allow"
         Resource = [
-                    var.rdsdb_root_password_arn
-                  ]
-    },
-    {
-        Sid      = "AllowReadingSSMParameters"
-        Effect   = "Allow"
-        Action   = [
+          var.rdsdb_root_password_arn
+        ]
+      },
+      {
+        Sid    = "AllowReadingSSMParameters"
+        Effect = "Allow"
+        Action = [
           "ssm:GetParameters",
           "ssm:GetParameter"
         ]
@@ -95,7 +95,7 @@ resource "aws_iam_policy" "ecs_task_secrets_policy" {
 
         ]
       }
-    
+
     ]
   })
 }
@@ -133,12 +133,12 @@ resource "aws_iam_policy" "ecs_metadata_policy" {
 
 # 2. Attach it to your Task Role (Ensure your ecs_task_role exists!)
 resource "aws_iam_role_policy_attachment" "ecs_metadata_attach" {
-  role       = aws_iam_role.ecs_task_role.name 
+  role       = aws_iam_role.ecs_task_role.name
   policy_arn = aws_iam_policy.ecs_metadata_policy.arn
 }
 resource "aws_iam_role_policy_attachment" "ecs_metadata_attach_exec" {
   # Change this to target the Execution Role, since that is what the log says your app is using!
-  role       = aws_iam_role.ecs_task_execution_role.name 
+  role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = aws_iam_policy.ecs_metadata_policy.arn
 }
 

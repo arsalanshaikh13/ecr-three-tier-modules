@@ -73,12 +73,12 @@ variable "db_name" {
 variable "domain_name" {
   description = "The primary domain name for the application (e.g., example.com)"
   type        = string
-  default = "devsandbox.space"
+  default     = "devsandbox.space"
 }
 variable "account_id" {
   description = "The primary account id"
   type        = string
-  default = "750702272407"
+  default     = "750702272407"
 }
 
 variable "back_asg_desired_capacity" {

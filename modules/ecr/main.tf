@@ -6,7 +6,7 @@
 # }
 
 resource "aws_ecr_repository" "app_repos" {
-  for_each = toset(var.ecr_names)
+  for_each             = toset(var.ecr_names)
   name                 = "lirw-ecr-${each.key}-repo-${var.env_suffix}"
   image_tag_mutability = "IMMUTABLE"
   force_delete         = true
@@ -14,19 +14,19 @@ resource "aws_ecr_repository" "app_repos" {
   image_scanning_configuration {
     scan_on_push = true
   }
-  
+
   encryption_configuration {
     encryption_type = "AES256"
   }
 
-  tags = merge(var.common_tags, { 
-    Name = "ecr-lirwEcr-${each.key}-repo-${var.env_suffix}" 
+  tags = merge(var.common_tags, {
+    Name = "ecr-lirwEcr-${each.key}-repo-${var.env_suffix}"
   })
 }
 
 
 resource "aws_ecr_lifecycle_policy" "app_repo_lifecycle" {
-    for_each = var.ecr_names
+  for_each = var.ecr_names
 
   # repository = each.value.name # References the name from the repo loop above
   repository = aws_ecr_repository.app_repos[each.key].name # References the name from the repo loop above

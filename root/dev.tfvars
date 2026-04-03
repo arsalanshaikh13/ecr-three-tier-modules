@@ -20,76 +20,76 @@ pri_sub_4b_cidr = "10.0.4.0/24"
 ## ASG settings
 # asg instance type
 frontend_instance_type = "c7i-flex.large"
-backend_instance_type = "c7i-flex.large"
+backend_instance_type  = "c7i-flex.large"
 
 # asg capacity
-back_asg_min_size = 1
-back_asg_max_size = 2
+back_asg_min_size         = 1
+back_asg_max_size         = 2
 back_asg_desired_capacity = 1
 
-front_asg_min_size = 1
-front_asg_max_size = 2
+front_asg_min_size         = 1
+front_asg_max_size         = 2
 front_asg_desired_capacity = 1
 
 
 # auto scale ecs based on CPU utitlization
 front_scale_min_cap = 2
 front_scale_max_cap = 10
-back_scale_min_cap = 2
-back_scale_max_cap = 10
+back_scale_min_cap  = 2
+back_scale_max_cap  = 10
 
 
 # lb & tg ports and protocols
-backend_lb_type = "application"
-backend_alb_port = 80
+backend_lb_type      = "application"
+backend_alb_port     = 80
 backend_alb_protocol = "HTTP"
-backend_tg_port = 3200
-backend_tg_protocol = "HTTP"
+backend_tg_port      = 3200
+backend_tg_protocol  = "HTTP"
 
-frontend_lb_type = "application"
-frontend_alb_port = 443
+frontend_lb_type      = "application"
+frontend_alb_port     = 443
 frontend_alb_protocol = "HTTPS"
-frontend_tg_port = 80
-frontend_tg_protocol = "HTTP"
+frontend_tg_port      = 80
+frontend_tg_protocol  = "HTTP"
 
-backend_health_check_path = "/health"
+backend_health_check_path  = "/health"
 frontend_health_check_path = "/health"
 
 
 # ECS Configuration
-launch_type = "EC2"
-ecs_network_mode_db = "awsvpc" 
-ecs_network_mode_frontend = "awsvpc" 
-ecs_network_mode_backend = "awsvpc" 
+launch_type               = "EC2"
+ecs_network_mode_db       = "awsvpc"
+ecs_network_mode_frontend = "awsvpc"
+ecs_network_mode_backend  = "awsvpc"
 # ECS task sizing
 # 256 CPU units = 0.25 vCPU
 # 512 MiB       = 0.5 GB
 # Smallest valid Fargate size
-backend_cpu       = 512 # 0.5 vCPU
-backend_memory    = 1024 # 1 GB
-frontend_cpu       = 512 # 0.5 vCPU
-frontend_memory    = 1024 # 1 GB
+backend_cpu            = 1024 # 0.5 vCPU
+backend_memory         = 2048 # 1 GB
+frontend_cpu           = 512  # 0.5 vCPU
+frontend_memory        = 1024 # 1 GB
 frontend_desired_count = 2
-backend_desired_count = 2
+backend_desired_count  = 2
 
 frontend_image = "nginx:alpine"
-backend_image = "node:20-alpine"
+backend_image  = "node:20-alpine"
 
 
-db_image = "alpine/mysql:seeder-latest"
-db_cpu = 1024
+db_image  = "alpine/mysql:seeder-latest"
+db_cpu    = 1024
 db_memory = 2048
-db_name = "lirwEcrDB"
+db_name   = "lirwEcrDB"
 # db_password = "secret_password"
-db_username = "admin123"
-db_port = 3306
-db_storage = 20
-db_storage_type = "gp3"
-db_engine = "mysql"
-db_engine_version = "8.0"
-db_instance_type = "db.t3.micro" # Burstable instance for dev
-db_parameter_group_name = "default.mysql8.0" 
+db_username             = "admin123"
+db_port                 = 3306
+db_storage              = 20
+db_storage_type         = "gp3"
+db_engine               = "mysql"
+db_engine_version       = "8.0"
+db_instance_type        = "db.t3.micro" # Burstable instance for dev
+db_parameter_group_name = "default.mysql8.0"
 
 # domain name
-domain_name = "devsandbox.space"
+domain_name      = "devsandbox.space"
 backend_api_name = "api.devsandbox.space"
