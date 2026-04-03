@@ -9,17 +9,13 @@
 
 output "ecs_cluster_name" {
   description = "ECS Cluster name"
-  value       = aws_ecs_cluster.app_cluster.name
+  value       = module.ecs_ec2.app_cluster_name
 }
 
-output "alb_dns_name" {
+output "frontend_alb_dns_name" {
   description = "ALB DNS name"
-  value       = aws_lb.app_alb.dns_name
+  value       = module.lb.frontend_alb_dns_name
 }
 
 
-output "task_role_arn" {
-  description = "Task Execution Role ARN"
-  value       = aws_iam_role.ecs_task_execution_role.arn
-}
 

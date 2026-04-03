@@ -12,3 +12,5 @@ data "aws_caller_identity" "current" {}
 
 # Get region details
 data "aws_region" "current" {}
+
+data "aws_availability_zones" "available_zones" {}

@@ -3,7 +3,6 @@
 ##############################################
 
 locals {
-  environment = var.environment
   env_suffix  = lower(var.environment)
 
   common_tags = {
@@ -11,4 +10,8 @@ locals {
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
+
+    ecr_names = toset(["frontend", "backend", "database-seeder"])
+
 }
+
