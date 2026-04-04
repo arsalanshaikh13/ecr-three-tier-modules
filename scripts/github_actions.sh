@@ -9,10 +9,10 @@
 # git checkout -b service-discovery
 # git checkout nextjs-fargate
 
-git add .; git commit -m "imported public module for asg and lb "; 
+git add .; git commit -m "imported host module for sg and switch network to host in dev.tfvars "; 
 git push;
-git tag tf-module-ec2-bridge-public
-git push origin tf-module-ec2-bridge-public
+git tag tf-module-ec2-host-public
+git push origin tf-module-ec2-host-public
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
 # git tag -l "lirw-*" | xargs git tag -d
@@ -22,9 +22,9 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 gh workflow run deploy.yml \
   --ref main \
-  -f build_frontend=false \
+  -f build_frontend=true \
   -f get_frontend=false \
-  -f build_backend=false \
+  -f build_backend=true \
   -f get_backend=false \
   -f run_seeding=true
 
