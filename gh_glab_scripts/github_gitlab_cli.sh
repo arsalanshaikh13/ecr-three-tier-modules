@@ -92,6 +92,16 @@ echo '{
 gh api --method POST repos/owner/repo/environments/production/deployment-branch-policies -f name='main' -f type='branch'
 gh api --method POST repos/owner/repo/environments/production/deployment-branch-policies -f name='v*' -f type='tag'
 
+
+# 3. Create 'production' Environment & Secrets
+# echo "Creating production env..."
+gh api --method PUT "repos/$GH_USER/$REPO_NAME/environments/production"
+
+# set variables and secrets in environment
+gh secret set AWS_ACCESS_KEY --body "AKIA..." --repo "$GH_USER/$REPO_NAME" --env production
+gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME" --env prod
+gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME" --env dev
+
 # Delete the entire environment
 gh api --method DELETE repos/owner/repo/environments/production
 

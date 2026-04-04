@@ -9,16 +9,12 @@
 # git checkout -b service-discovery
 # git checkout nextjs-fargate
 
-# git add .; git commit -m "fargate specific changes made to the code adding 2 more subnets and changing rds subnets"; git push
+git add .; git commit -m "bridge network specific changes made"; git push;
 # git tag tf-module-fargate 
 # git push origin tf-module-fargate
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
-# git tag -l "circleci-*" | xargs -I {} git push origin --delete {}
-git tag -l "lirw-*" | xargs git tag -d
-git tag -l "circleci-*" | xargs git tag -d
-git tag -l "db-*" | xargs git tag -d
-git tag -l "updated-*" | xargs git tag -d
+# git tag -l "lirw-*" | xargs git tag -d
 
 # gh workflow run deploy.yml \
 #   --ref main \

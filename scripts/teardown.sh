@@ -119,3 +119,6 @@ echo "======================================================"
 cd root
 # Run Terraform Destroy
 terraform destroy -var-file=dev.tfvars -parallelism=20 -auto-approve
+
+# terraform destroy -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
+# terraform apply -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener

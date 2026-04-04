@@ -37,7 +37,7 @@ on:
         default: false
 
 env:
-  AWS_REGION: us-east-1
+  # AWS_REGION: us-east-1
   # These are prefixes. The matrix will append '-frontend' or '-backend' to them
   ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
 
@@ -122,7 +122,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -216,7 +216,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -302,13 +302,7 @@ jobs:
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
             --task-definition ${{ steps.register-task-def.outputs.task_def_arn }} \
-            --launch-type FARGATE \
-            --network-configuration '{
-              "awsvpcConfiguration": {
-                "subnets": ${{ steps.lookup.outputs.subnets }},
-                "securityGroups": ["${{ steps.lookup.outputs.sg_id }}"]
-                }
-              }' \
+            --launch-type EC2 \
             --query "tasks[0].taskArn" \
             --output text)
             
