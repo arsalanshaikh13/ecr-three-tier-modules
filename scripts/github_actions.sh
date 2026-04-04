@@ -9,10 +9,10 @@
 # git checkout -b service-discovery
 # git checkout nextjs-fargate
 
-git add .; git commit -m "made some workflow display related code change to github_actions.sh"; 
+git add .; git commit -m "imported private-subnet module for asg and lb"; 
 git push;
-# git tag tf-module-ec2-host 
-# git push origin tf-module-ec2-host
+git tag tf-module-ec2-host-private
+git push origin tf-module-ec2-host-private
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
 # git tag -l "lirw-*" | xargs git tag -d

@@ -3,64 +3,36 @@
 # ==========================================================
 # Configuration: Update these to match your environment
 # ==========================================================
+cd root
 CLUSTER_NAME="lirw-ecs-cluster-dev"
 # Define your services as an array
+SERVICES=("backend-service" "frontend-service" )
+# ASG_NAME="ecs-asg-dev"
+ASG_NAMES=("lirw-ecs-asg-backend-dev" "lirw-ecs-asg-frontend-dev" )
 REGION="us-east-1"
-
-# Define the arrays for your multiple services and target groups
-TARGET_GROUPS=("backend-internal-tg" "frontend-public-tg" )
-SERVICES=("backend-service" "frontend-service")
 
 echo "======================================================"
 echo " 🛑 Initiating Safe ECS Teardown Sequence..."
 echo "======================================================"
 
-# Step 1: Remove the Load Balancer's safety net
-echo "1️⃣ Modifying Target Groups to drop connections instantly..."
-
-for TG_NAME in "${TARGET_GROUPS[@]}"; do
-  echo "   🔄 Checking Target Group: $TG_NAME..."
-  
-  # Retrieve the exact ARN of the Target Group
-  TG_ARN=$(aws elbv2 describe-target-groups \
-    --names "$TG_NAME" \
-    --region "$REGION" \
-    --query 'TargetGroups[0].TargetGroupArn' \
-    --output text 2>/dev/null)
-
-  if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-    # Force the draining delay to 0 seconds
-    aws elbv2 modify-target-group-attributes \
-      --target-group-arn "$TG_ARN" \
-      --attributes Key=deregistration_delay.timeout_seconds,Value=0 \
-      --region "$REGION" > /dev/null
-    echo "      ✅ Deregistration delay set to 0. Safety nets removed."
-  else
-    echo "      ⚠️ Target Group not found (It may already be deleted). Proceeding..."
-  fi
-done
-
-# Step 2: Tell AWS to drain the tasks
-echo ""
-echo "2️⃣ Scaling all services down to 0 tasks..."
-
+# Step 1: Tell AWS to drain the tasks
+echo "1️⃣ Scaling services down to 0 tasks..."
 for SERVICE_NAME in "${SERVICES[@]}"; do
   echo "   📉 Scaling $SERVICE_NAME..."
   aws ecs update-service \
     --cluster "$CLUSTER_NAME" \
     --service "$SERVICE_NAME" \
     --desired-count 0 \
-    --region "$REGION" > /dev/null 2>&1
-    
+    --region "$REGION" > /dev/null
+
   if [ $? -ne 0 ]; then
-    echo "      ⚠️ Failed to update $SERVICE_NAME. (It may not exist). Proceeding..."
+    echo "   ❌ Failed to update $SERVICE_NAME. Please check your AWS credentials and cluster name."
+    exit 1
   fi
 done
 
-# Step 3: Actively monitor the shutdown process
-echo ""
-echo "3️⃣ Waiting for all running tasks to terminate cleanly..."
-
+# Step 2: Actively monitor the shutdown process
+echo "2️⃣ Waiting for all running tasks to terminate cleanly..."
 while true; do
   ALL_SERVICES_DOWN=true
 
@@ -71,12 +43,7 @@ while true; do
       --services "$SERVICE_NAME" \
       --region "$REGION" \
       --query 'services[0].runningCount' \
-      --output text 2>/dev/null)
-
-    # Check if the query returned a valid number (handles "service not found" edge cases)
-    if [[ ! "$RUNNING_TASKS" =~ ^[0-9]+$ ]]; then
-      RUNNING_TASKS=0 # Treat missing services as having 0 tasks
-    fi
+      --output text)
 
     if [ "$RUNNING_TASKS" -gt 0 ]; then
       echo "   ⏳ $SERVICE_NAME still has $RUNNING_TASKS task(s) running..."
@@ -86,7 +53,7 @@ while true; do
 
   # If all services reported 0 tasks, break the loop
   if [ "$ALL_SERVICES_DOWN" = true ]; then
-    echo "   ✅ All tasks across all services have been successfully terminated."
+    echo "✅ All ECS services have successfully scaled down to 0!"
     break
   fi
 
@@ -94,30 +61,60 @@ while true; do
   sleep 10
 done
 
-# Step 4: Force delete the services
-echo ""
-echo "4️⃣ Force deleting ECS services..."
 
-for SERVICE_NAME in "${SERVICES[@]}"; do
-  echo "   🗑️ Deleting $SERVICE_NAME..."
-  aws ecs delete-service \
-    --cluster "$CLUSTER_NAME" \
-    --service "$SERVICE_NAME" \
+# Step 3: Terminate the EC2 Instances
+# Step 3: Terminate the EC2 Instances for each ASG
+echo "3️⃣ Scaling Auto Scaling Groups to 0 instances..."
+
+for ASG_NAME in "${ASG_NAMES[@]}"; do
+  echo "--- Processing ASG: $ASG_NAME ---"
+
+  # Scale the ASG to 0
+  aws autoscaling update-auto-scaling-group \
+    --auto-scaling-group-name "$ASG_NAME" \
+    --min-size 0 \
+    --max-size 0 \
+    --desired-capacity 0 \
+    --region "$REGION" > /dev/null
+
+  if [ $? -ne 0 ]; then
+    echo "  ⚠️ Failed to update $ASG_NAME. It may not exist."
+    continue # Skip to the next ASG in the array
+  else
+    echo "  ✅ $ASG_NAME scaled to 0."
+  fi
+
+  # Extract Instance IDs for this specific ASG
+  INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "$ASG_NAME" \
     --region "$REGION" \
-    --force \
-    --no-cli-pager > /dev/null 2>&1
-    
-  # Note: A second non-force delete is usually redundant if --force is used, 
-  # but left out here to keep the terminal output clean and prevent duplicate errors.
-done
+    --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
+    --output text)
 
-# Step 5: Trigger Terraform
-echo ""
+  if [ -n "$INSTANCE_IDS" ] && [ "$INSTANCE_IDS" != "None" ]; then
+    echo "  🔥 Target(s) acquired in $ASG_NAME: $INSTANCE_IDS"
+    
+    # Forcefully terminate the instances
+    aws ec2 terminate-instances \
+      --instance-ids $INSTANCE_IDS \
+      --region "$REGION" > /dev/null
+      
+    echo "  ⏳ Waiting for termination confirmation..."
+    aws ec2 wait instance-terminated \
+      --instance-ids $INSTANCE_IDS \
+      --region "$REGION"
+      
+    echo "  ✅ Instances in $ASG_NAME destroyed."
+  else
+    echo "  ✅ No running instances found in $ASG_NAME."
+  fi
+done
+# # Step 3: Trigger Terraform
 echo "======================================================"
 echo " 🌪️  Infrastructure is clear. Triggering Terraform... "
 echo "======================================================"
-cd root
-# Run Terraform Destroy
+
+# We use the standard command so you still get the [yes/no] safety prompt
 terraform destroy -var-file=dev.tfvars -parallelism=20 -auto-approve
 
 # terraform destroy -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener

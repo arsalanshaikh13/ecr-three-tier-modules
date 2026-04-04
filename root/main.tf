@@ -142,7 +142,7 @@ module "route53" {
 
 module "asg" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//asg"
-  version = "0.0.1"
+  version = "0.0.8-private-subnet"
   back_asg_desired_capacity  = var.back_asg_desired_capacity
   back_asg_max_size          = var.back_asg_max_size
   back_asg_min_size          = var.back_asg_min_size
@@ -180,7 +180,7 @@ module "asg" {
 module "lb" {
   # 1. Native Terraform registry path 
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//lb"
-  version = "0.0.2-non-awsvpc"
+  version = "0.0.8-private-subnet"
   backend_alb_port           = var.backend_alb_port
   backend_alb_protocol       = var.backend_alb_protocol
   backend_health_check_path  = var.backend_health_check_path
