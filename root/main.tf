@@ -36,7 +36,7 @@ module "nat_instance" {
 
 module "sg" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//sg"
-  version = "0.0.3-bridge"
+  version = "0.0.4-host"
   backend_alb_port  = var.backend_alb_port
   backend_tg_port   = var.backend_tg_port
   common_tags       = local.common_tags
