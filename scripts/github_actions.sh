@@ -9,10 +9,10 @@
 # git checkout -b service-discovery
 # git checkout nextjs-fargate
 
-git add .; git commit -m "imported bridge module for sg and made bridge mode change in dev.tfvars"; 
+git add .; git commit -m "imported public module for asg and lb "; 
 git push;
-# git tag tf-module-ec2-bridge-private
-# git push origin tf-module-ec2-bridge-private
+git tag tf-module-ec2-bridge-public
+git push origin tf-module-ec2-bridge-public
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
 # git tag -l "lirw-*" | xargs git tag -d
