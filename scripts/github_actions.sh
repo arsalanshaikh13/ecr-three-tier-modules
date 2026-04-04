@@ -11,8 +11,8 @@
 
 git add .; git commit -m "host network specific changes made"; 
 git push;
-git tag tf-module-ec2-host 
-git push origin tf-module-ec2-host
+# git tag tf-module-ec2-host 
+# git push origin tf-module-ec2-host
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
 # git tag -l "lirw-*" | xargs git tag -d
