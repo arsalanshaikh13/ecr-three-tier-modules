@@ -1,15 +1,5 @@
-// const db = require('../configs/db');
 const dbPromise = require("../configs/db");
 const logger = require("../utils/logger"); // Import logger
-let db;
-(async () => {
-  try {
-    db = await dbPromise;
-  } catch (err) {
-    logger.error(`Failed to start: ${err.stack}`);
-    process.exit(1);
-  }
-})();
 
 function BooksController() {}
 
@@ -20,24 +10,18 @@ BooksController.prototype.get = async (req, res) => {
   try {
     logger.info("BooksController [GET]");
 
-    db.query(getQuery, (err, books) => {
-      if (err) {
-        logger.error(`Error executing query: ${err.message}`);
-        return res.status(500).json({
-          message: "Database query failed.",
-          details: err.message,
-        });
-      }
+    // Resolve the pool inside each handler so requests do not depend on module-load timing.
+    const db = await dbPromise;
+    const [books] = await db.query(getQuery);
 
-      logger.info(`Books count: ${books.length}`);
+    logger.info(`Books count: ${books.length}`);
 
-      res.status(200).json({
-        books: books,
-      });
+    return res.status(200).json({
+      books,
     });
   } catch (error) {
     logger.error(`Error: ${error.message}`);
-    res.status(500).json({
+    return res.status(500).json({
       message: "Something unexpected has happened. Please try again later.",
     });
   }
@@ -45,58 +29,37 @@ BooksController.prototype.get = async (req, res) => {
 
 BooksController.prototype.create = async (req, res) => {
   try {
-    const {
-      title,
-      description,
-      releaseDate,
-      pages,
-      author: authorId,
-    } = req.body;
+    const { title, description, releaseDate, pages, author: authorId } = req.body;
+    const parsedReleaseDate = new Date(releaseDate);
+
+    // Reject invalid user input before it reaches the database layer.
+    if (!releaseDate || Number.isNaN(parsedReleaseDate.getTime())) {
+      return res.status(400).json({
+        message: "Invalid releaseDate format.",
+      });
+    }
 
     logger.info(
       `BooksController [CREATE] - title: ${title}, description: ${description}, releaseDate: ${releaseDate}, pages: ${pages}, authorId: ${authorId}`,
     );
 
-    db.query(
+    const db = await dbPromise;
+    await db.query(
       "INSERT INTO book (title, releaseDate, description, pages, authorId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [
-        title,
-        new Date(releaseDate),
-        description,
-        pages,
-        authorId,
-        new Date(),
-        new Date(),
-      ],
-      (err) => {
-        if (err) {
-          logger.error(`Error executing query: ${err.message}`);
-          throw new Error("Error executing query.", err);
-        }
-
-        db.query(getQuery, (err, books) => {
-          if (err) {
-            logger.error(`Error executing query: ${err.message}`);
-            return res.status(500).json({
-              message: "Database query failed.",
-              details: err.message,
-            });
-          }
-
-          logger.info(
-            `Book created successfully. books count: ${books.length}`,
-          );
-
-          return res.status(200).json({
-            message: `Book created successfully!`,
-            books: books,
-          });
-        });
-      },
+      [title, parsedReleaseDate, description, pages, authorId, new Date(), new Date()],
     );
+    // Re-read the collection after writes so the UI gets the latest book list.
+    const [books] = await db.query(getQuery);
+
+    logger.info(`Book created successfully. books count: ${books.length}`);
+
+    return res.status(201).json({
+      message: "Book created successfully!",
+      books,
+    });
   } catch (error) {
     logger.error(`Error: ${error.message}`);
-    res.status(500).json({
+    return res.status(500).json({
       message: "Something unexpected has happened. Please try again later.",
     });
   }
@@ -105,53 +68,43 @@ BooksController.prototype.create = async (req, res) => {
 BooksController.prototype.update = async (req, res) => {
   try {
     const bookId = req.params.id;
-    const {
-      title,
-      description,
-      releaseDate,
-      pages,
-      author: authorId,
-    } = req.body;
+    const { title, description, releaseDate, pages, author: authorId } = req.body;
+    const parsedReleaseDate = new Date(releaseDate);
+
+    if (!releaseDate || Number.isNaN(parsedReleaseDate.getTime())) {
+      return res.status(400).json({
+        message: "Invalid releaseDate format.",
+      });
+    }
 
     logger.info(
       `BooksController [UPDATE] - title: ${title}, description: ${description}, releaseDate: ${releaseDate}, pages: ${pages}, authorId: ${authorId}`,
     );
 
-    db.query(
+    const db = await dbPromise;
+    const [result] = await db.query(
       "UPDATE book SET title = ?, releaseDate = ?, description = ?, pages = ?, authorId = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?",
-      [title, new Date(releaseDate), description, pages, authorId, bookId],
-      (err) => {
-        if (err) {
-          logger.error(`Error executing query: ${err.message}`);
-          return res.status(500).json({
-            message: "Database query failed.",
-            details: err.message,
-          });
-        }
-
-        db.query(getQuery, (err, books) => {
-          if (err) {
-            logger.error(`Error executing query: ${err.message}`);
-            return res.status(500).json({
-              message: "Database query failed.",
-              details: err.message,
-            });
-          }
-
-          logger.info(
-            `Book updated successfully. books count: ${books.length}`,
-          );
-
-          return res.status(200).json({
-            message: `Book updated successfully!`,
-            books: books,
-          });
-        });
-      },
+      [title, parsedReleaseDate, description, pages, authorId, bookId],
     );
+
+    // Return a clear not-found response instead of reporting a silent no-op update.
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Book not found.",
+      });
+    }
+
+    const [books] = await db.query(getQuery);
+
+    logger.info(`Book updated successfully. books count: ${books.length}`);
+
+    return res.status(200).json({
+      message: "Book updated successfully!",
+      books,
+    });
   } catch (error) {
     logger.error(`Error: ${error.message}`);
-    res.status(500).json({
+    return res.status(500).json({
       message: "Something unexpected has happened. Please try again later.",
     });
   }
@@ -163,35 +116,28 @@ BooksController.prototype.delete = async (req, res) => {
 
     logger.info(`BooksController [DELETE] - bookId: ${bookId}`);
 
-    db.query("DELETE FROM book WHERE id = ?", [bookId], (err) => {
-      if (err) {
-        logger.error(`Error executing query: ${err.message}`);
-        return res.status(500).json({
-          message: "Database query failed.",
-          details: err.message,
-        });
-      }
+    // Use the shared pool for deletes too so all CRUD paths behave consistently.
+    const db = await dbPromise;
+    const [result] = await db.query("DELETE FROM book WHERE id = ?", [bookId]);
 
-      db.query(getQuery, (err, books) => {
-        if (err) {
-          logger.error(`Error executing query: ${err.message}`);
-          return res.status(500).json({
-            message: "Database query failed.",
-            details: err.message,
-          });
-        }
-
-        logger.info(`Book deleted successfully. books count: ${books.length}`);
-
-        return res.status(200).json({
-          message: `Book deleted successfully!`,
-          books: books,
-        });
+    // Return a clear not-found response instead of reporting a silent no-op delete.
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Book not found.",
       });
+    }
+
+    const [books] = await db.query(getQuery);
+
+    logger.info(`Book deleted successfully. books count: ${books.length}`);
+
+    return res.status(200).json({
+      message: "Book deleted successfully!",
+      books,
     });
   } catch (error) {
     logger.error(`Error: ${error.message}`);
-    res.status(500).json({
+    return res.status(500).json({
       message: "Something unexpected has happened. Please try again later.",
     });
   }

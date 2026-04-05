@@ -12,37 +12,6 @@ variable "environment" {
   type        = string
 }
 
-variable "vpc_id" {
-  description = "VPC ID for ECS and ALB resources"
-  type        = string
-}
-
-variable "public_subnets" {
-  description = "List of public subnet IDs for ALB"
-  type        = list(string)
-}
-
-# variable "alb_sg_id" {
-#   description = "Security group ID for ALB"
-#   type        = string
-# }
-
-# variable "app_sg_id" {
-#   description = "Security group ID for ECS tasks"
-#   type        = string
-# }
-
-variable "app_cpu" {
-  description = "CPU units for the ECS task definition"
-  type        = number
-  default     = 512
-}
-
-variable "app_memory" {
-  description = "Memory in MB for the ECS task definition"
-  type        = number
-  default     = 1024
-}
 variable "db_cpu" {
   description = "CPU units for the ECS task definition"
   type        = number
@@ -116,10 +85,10 @@ variable "backend_alb_protocol" {
   type        = string
 }
 
-variable "backend_api_name" {
-  description = "Name for backend api name."
-  type        = string
-}
+# variable "backend_api_name" {
+#   description = "Name for backend api name."
+#   type        = string
+# }
 
 variable "backend_cpu" {
   description = "CPU setting for backend cpu."
@@ -342,4 +311,24 @@ variable "pub_sub_2b_cidr" {
 variable "vpc_cidr" {
   description = "CIDR block for vpc cidr."
   type        = string
+}
+
+# variable "env_suffix" {
+#   description = "Environment value for env suffix."
+#   type        = string
+# }
+
+variable "probe_cpu" {
+  description = "CPU setting for probe cpu."
+  type        = number
+}
+
+variable "probe_image" {
+  description = "Input variable for probe image."
+  type        = string
+}
+
+variable "probe_memory" {
+  description = "Memory setting for probe memory."
+  type        = number
 }

@@ -4,12 +4,23 @@ on:
   push:
     branches:
       - main
+      - multi-env
     paths:
       - "lirw-three-tier/frontend/**"
       - "lirw-three-tier/backend/**"
+      - "lirw-three-tier/probe/**"
       - ".github/workflows/**"
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "Target environment to deploy"
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+          - prod
+          - all
       build_frontend:
         description: "Build & Deploy Frontend?"
         type: boolean
@@ -36,11 +47,6 @@ on:
         required: true
         default: false
 
-env:
-  # AWS_REGION: us-east-1
-  # These are prefixes. The matrix will append '-frontend' or '-backend' to them
-  ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
-
 permissions:
   id-token: write
   contents: read
@@ -53,8 +59,10 @@ jobs:
     name: Detect Changed Paths & Setup Matrix
     runs-on: ubuntu-latest
     outputs:
-      # We output the JSON array string here
+      # Output includes component+environment object matrix for build-and-deploy job.
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      # Output environment list for seed job matrix.
+      env_matrix: ${{ steps.set-matrix.outputs.env_matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,16 +75,22 @@ jobs:
               - 'lirw-three-tier/frontend/**'
             backend:
               - 'lirw-three-tier/backend/**'
+            probe:
+              - 'lirw-three-tier/probe/**'
 
       - name: Calculate Dynamic Matrix
         id: set-matrix
         run: |
           COMPONENTS=()
+          TARGET_ENVS=()
 
           # 1. PUSH EVENT: Only build based on path filters
           if [ "${{ github.event_name }}" == "push" ]; then
             if [ "${{ steps.filter.outputs.frontend }}" == "true" ]; then COMPONENTS+=("frontend"); fi
             if [ "${{ steps.filter.outputs.backend }}" == "true" ]; then COMPONENTS+=("backend"); fi
+            # Probe is built in its own post-deploy job, so we only need app components here.
+            # For push events we deploy dev only by default to keep production gated.
+            TARGET_ENVS=("dev")
 
           # 2. MANUAL TRIGGER: Include if EITHER build or get is true
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
@@ -88,22 +102,41 @@ jobs:
             if [[ "${{ inputs.build_backend }}" == "true" || "${{ inputs.get_backend }}" == "true" ]]; then
                COMPONENTS+=("backend")
             fi
+
+            # Manual trigger can target one environment or both in parallel.
+            if [ "${{ inputs.target_environment }}" == "all" ]; then
+              TARGET_ENVS=("dev" "prod")
+            else
+              TARGET_ENVS=("${{ inputs.target_environment }}")
+            fi
           fi
 
-          # Convert to JSON
-          if [ ${#COMPONENTS[@]} -eq 0 ]; then
+          # Build object matrix: [{ "component":"frontend", "environment":"dev" }, ...]
+          if [ ${#COMPONENTS[@]} -eq 0 ] || [ ${#TARGET_ENVS[@]} -eq 0 ]; then
             MATRIX_JSON="[]"
           else
-            MATRIX_JSON=$(printf '%s\n' "${COMPONENTS[@]}" | jq -R . | jq -s -c .)
+            MATRIX_JSON=$(jq -cn \
+              --argjson comps "$(printf '%s\n' "${COMPONENTS[@]}" | jq -R . | jq -s .)" \
+              --argjson envs "$(printf '%s\n' "${TARGET_ENVS[@]}" | jq -R . | jq -s .)" \
+              '[ $comps[] as $c | $envs[] as $e | {component: $c, environment: $e} ]')
+          fi
+
+          # Environment-only matrix for seeding job.
+          if [ ${#TARGET_ENVS[@]} -eq 0 ]; then
+            ENV_MATRIX_JSON="[]"
+          else
+            ENV_MATRIX_JSON=$(printf '%s\n' "${TARGET_ENVS[@]}" | jq -R . | jq -s -c .)
           fi
 
           echo "Calculated Matrix: $MATRIX_JSON"
+          echo "Calculated Env Matrix: $ENV_MATRIX_JSON"
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          echo "env_matrix=$ENV_MATRIX_JSON" >> $GITHUB_OUTPUT
   # ---------------------------------------------------------
   # 2. BUILD & DEPLOY (Matrix for Frontend / Backend)
   # ---------------------------------------------------------
   build-and-deploy:
-    name: Build & Deploy ${{ matrix.component }}
+    name: Build & Deploy ${{ matrix.component }} (${{ matrix.environment }})
     needs: detect-changes
     # CRITICAL: If the array is empty, skip this job entirely to prevent matrix errors
     if: ${{ needs.detect-changes.outputs.matrix != '[]' }}
@@ -111,8 +144,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # This dynamically loads the array we built in the previous job
-        component: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+        # This dynamically loads component+environment objects from detect-changes.
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    # IMPORTANT:
+    # Environment-scoped vars/secrets (AWS_REGION, ACCOUNT_ID, ENV_VAR, PROJECT_NAME, etc.)
+    # are resolved from the selected GitHub Environment.
+    environment: ${{ matrix.environment }}
+    env:
+      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
 
     steps:
       - name: Checkout repository
@@ -135,7 +174,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           # Dynamically set repository based on matrix component
-          ECR_REPOSITORY: lirw-ecr-${{ matrix.component }}-repo-${{ vars.ENV_VAR }}
+          ECR_REPOSITORY: ${{ vars.PROJECT_NAME }}-${{ matrix.component }}-repo-${{ vars.ENV_VAR }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           cd lirw-three-tier/${{ matrix.component }}
@@ -154,7 +193,7 @@ jobs:
         if: (inputs.get_frontend == true || inputs.get_backend == true) || github.event_name == 'push'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lirw-ecr-${{ matrix.component }}-repo-${{ vars.ENV_VAR }}
+          ECR_REPOSITORY: ${{ vars.PROJECT_NAME }}-${{ matrix.component }}-repo-${{ vars.ENV_VAR }}
 
         run: |
           # 1. If the user left the input as 'latest', dynamically fetch the most recent tag from ECR
@@ -200,13 +239,199 @@ jobs:
           wait-for-service-stability: true
 
   # ---------------------------------------------------------
-  # 3. DB SEEDING (Manual Only)
+  # 3. POST-DEPLOY PROBE (Runs once per environment)
+  # ---------------------------------------------------------
+  probe-app:
+    name: Probe App (${{ matrix.environment }})
+    needs: [detect-changes, build-and-deploy]
+    if: ${{ needs.detect-changes.outputs.env_matrix != '[]' && needs.detect-changes.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
+    environment: ${{ matrix.environment }}
+    env:
+      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push probe image
+        id: build-probe
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.PROJECT_NAME }}-probe-repo-${{ vars.ENV_VAR }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd lirw-three-tier/probe
+
+          # Build a lightweight probe image so smoke tests run from inside the VPC.
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            .
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # - name: Render probe task definition
+      #   id: render-probe-task-def
+      #   env:
+      #     PROBE_TASK_FAMILY: ${{ vars.PROJECT_NAME }}-probe-${{ vars.ENV_VAR }}
+      #   run: |
+      #     # Start from the example JSON so you can later replace it with a Terraform-managed
+      #     # task definition that already includes your CloudWatch logs and networking defaults.
+      #     cp lirw-three-tier/probe/task-definition.example.json task-definition-probe.json
+
+      #     jq \
+      #       --arg family "$PROBE_TASK_FAMILY" \
+      #       --arg image "${{ steps.build-probe.outputs.image }}" \
+      #       --arg execution_role "${{ vars.PROBE_EXECUTION_ROLE_ARN }}" \
+      #       --arg frontend_url "${{ vars.FRONTEND_APP_URL }}" \
+      #       --arg backend_url "${{ vars.BACKEND_API_URL }}" \
+      #       --arg region "${{ vars.AWS_REGION }}" \
+      #       '.family = $family
+      #       | .executionRoleArn = $execution_role
+      #       | .containerDefinitions[0].image = $image
+      #       | (.containerDefinitions[0].environment[] | select(.name == "FRONTEND_URL").value) = $frontend_url
+      #       | (.containerDefinitions[0].environment[] | select(.name == "BACKEND_URL").value) = $backend_url
+      #       | .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region' \
+      #       task-definition-probe.json > task-definition-probe.rendered.json
+
+      - name: Download current ECS task definition
+        env:
+          TASK_DEF_NAME: ${{ vars.PROJECT_NAME }}-probe-${{ vars.ENV_VAR }}
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $TASK_DEF_NAME \
+            --query taskDefinition > task-definition-probe-${{ vars.ENV_VAR }}.json
+
+      - name: Render new task definition with new image
+        id: render-seeder-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-probe-${{ vars.ENV_VAR }}.json
+          # CRITICAL: Change this to match the container name in your Terraform db-seeder task definition!
+          container-name: ${{ vars.PROJECT_NAME }}-probe-${{ vars.ENV_VAR }}
+          image: ${{ steps.build-probe.outputs.image }}
+
+      - name: Register probe task definition
+        id: register-probe-task-def
+        run: |
+          PROBE_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition-probe-${{ vars.ENV_VAR }}.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "task_def_arn=$PROBE_TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Fetch Network IDs via AWS CLI
+        id: lookup_probe_id
+        run: |
+          # 1. Look up the Backend Security Group by its Name tag
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=ecs-node-frontend-sg-${{ vars.ENV_VAR }}" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text)
+
+          # 2. Look up the Private Subnets by their Name tags
+          SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=pri-sub-3a,pri-sub-4b" \
+            --query 'Subnets[*].SubnetId' \
+            --output json | tr -d '\n' | tr -d ' ')
+
+          if [ "$SG_ID" == "None" ] || [ -z "$SUBNETS" ]; then
+            echo "Error: Could not find Security Group or Subnets"
+            exit 1
+          fi
+
+          echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
+          echo "subnets=$SUBNETS" >> $GITHUB_OUTPUT
+
+      - name: Run probe task in private subnets
+        id: run-probe
+        run: |
+          # PROBE_SUBNET_IDS should be a comma-separated list without spaces.
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --task-definition "${{ steps.register-probe-task-def.outputs.task_def_arn }}" \
+            --launch-type FARGATE \
+            --network-configuration '{
+              "awsvpcConfiguration": {
+                "subnets": ${{ steps.lookup_probe_id.outputs.subnets }},
+                "securityGroups": ["${{ steps.lookup_probe_id.outputs.sg_id }}"]
+                }
+              }' \
+              --query "tasks[0].taskArn" \
+            --output text)
+
+          echo "task_arn=$TASK_ARN" >> $GITHUB_OUTPUT
+          echo "Probe task started with ARN: $TASK_ARN"
+
+      - name: Wait for probe task to stop
+        run: |
+          aws ecs wait tasks-stopped \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${{ steps.run-probe.outputs.task_arn }}"
+
+      - name: Check probe task result
+        run: |
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
+            --query "tasks[0].containers[0].exitCode" \
+            --output text)
+
+          STOPPED_REASON=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
+            --query "tasks[0].stoppedReason" \
+            --output text)
+
+          CONTAINER_REASON=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
+            --query "tasks[0].containers[0].reason" \
+            --output text)
+
+          echo "Probe exit code: $EXIT_CODE"
+          echo "Task stopped reason: $STOPPED_REASON"
+          echo "Container reason: $CONTAINER_REASON"
+          echo "Check CloudWatch logs from the probe task for the full smoke-test output."
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            exit 1
+          fi
+
+  # ---------------------------------------------------------
+  # 4. DB SEEDING (Manual Only)
   # ---------------------------------------------------------
   seed-database:
     name: Build & Run DB Seeder
+    needs: detect-changes
     runs-on: ubuntu-latest
     # ONLY runs on workflow dispatch AND if run_seeding is explicitly checked
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeding == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
+    environment: ${{ matrix.environment }}
+    env:
+      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
 
     steps:
       - name: Checkout repository
@@ -226,7 +451,7 @@ jobs:
         id: build-seeder
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: lirw-ecr-database-seeder-repo-${{ vars.ENV_VAR }}
+          ECR_REPOSITORY: ${{ vars.PROJECT_NAME }}-database-seeder-repo-${{ vars.ENV_VAR }}
           IMAGE_TAG: ${{ github.sha }} # Use SHA for a unique tag
         run: |
           cd lirw-three-tier/database-seeder

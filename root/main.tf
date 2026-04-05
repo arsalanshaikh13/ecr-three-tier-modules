@@ -50,7 +50,8 @@ module "sg" {
 
 module "iam" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//iam"
-  version = "0.0.7-nat-instance"
+  version = "0.0.14-iam-env"
+  # version = "0.0.7-nat-instance"
   account_id              = var.account_id
   region                  = var.region
   app_cluster_name        = "${var.project_name}-cluster-${local.env_suffix}"
@@ -116,33 +117,38 @@ module "cw_logs" {
 
 module "ecr" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecr"
-  version = "0.0.1"
+  version = "0.0.12-ecr-name"
   common_tags = local.common_tags
   ecr_names   = local.ecr_names
   env_suffix  = local.env_suffix
+  project_name = var.project_name
 }
 
 module "acm" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//acm"
-  version = "0.0.1"
+  version = "0.0.13-acm-env"
+  # version = "0.0.1"
   domain_name = var.domain_name
+  env_suffix = local.env_suffix
 }
 
 module "route53" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//route53"
-  version = "0.0.1"
+  version = "0.0.10-route53-multi"
   backend_alb_dns_name  = module.lb.backend_alb_dns_name
   backend_alb_zone_id   = module.lb.backend_alb_zone_id
   domain_name           = var.domain_name
   frontend_alb_dns_name = module.lb.frontend_alb_dns_name
   frontend_alb_zone_id  = module.lb.frontend_alb_zone_id
+  env_suffix = local.env_suffix
 }
 
 
 
 module "asg" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//asg"
-  version = "0.0.9-public-subnet"
+  version = "0.0.8-private-subnet"
+  # version = "0.0.9-public-subnet"
   back_asg_desired_capacity  = var.back_asg_desired_capacity
   back_asg_max_size          = var.back_asg_max_size
   back_asg_min_size          = var.back_asg_min_size
@@ -180,7 +186,8 @@ module "asg" {
 module "lb" {
   # 1. Native Terraform registry path 
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//lb"
-  version = "0.0.9-public-subnet"
+  version = "0.0.8-private-subnet"
+  # version = "0.0.9-public-subnet"
   backend_alb_port           = var.backend_alb_port
   backend_alb_protocol       = var.backend_alb_protocol
   backend_health_check_path  = var.backend_health_check_path
@@ -209,11 +216,12 @@ module "lb" {
 
 
 
-
 module "ecs_ec2" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecs_ec2"
-  version = "0.0.2-non-awsvpc"
-  backend_api_name           = var.backend_api_name
+  version = "0.0.11-probe"
+  # version = "0.0.2-non-awsvpc"
+  # backend_api_name           = var.backend_api_name
+  backend_api_name           = "api-${local.env_suffix}.${var.domain_name}"
   backend_cpu                = var.backend_cpu
   backend_desired_count      = var.backend_desired_count
   backend_health_check_path  = var.backend_health_check_path
@@ -233,6 +241,12 @@ module "ecs_ec2" {
   frontend_tg_port           = var.frontend_tg_port
   launch_type                = var.launch_type
   project_name               = var.project_name
+  region                      = var.region
+  probe_image = var.probe_image
+  probe_cpu = var.probe_cpu
+  probe_memory = var.probe_memory
+  domain_name = "${local.env_suffix}.${var.domain_name}"
+
 
   backend_tg_arn              = module.lb.backend_tg_arn
   common_tags                 = local.common_tags
@@ -254,15 +268,18 @@ module "ecs_ec2" {
   # pri_sub_4b_id           = module.nat.pri_sub_4b_id
   rds_db_address_arn          = module.ssm.rds_db_address_arn
   rdsdb_root_password_arn     = module.secrets.rdsdb_root_password_arn
-  region                      = var.region
+
+
 }
 
 
 
 # module "ecs_fargate" {
 #   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecs_fargate"
+#   version = "0.0.11-probe"
 #   version = "0.0.1-fargate"
 #   backend_api_name = var.backend_api_name
+#   backend_api_name = "api-${local.env_suffix}.${var.domain_name}"
 #   backend_cpu = var.backend_cpu
 #   backend_data_id = module.efs.backend_data_id
 #   backend_desired_count = var.backend_desired_count
@@ -281,6 +298,12 @@ module "ecs_ec2" {
 #   project_name = var.project_name
 #   frontend_tg_port = var.frontend_tg_port
 #   region = var.region
+
+# probe_image = var.probe_image
+#   probe_cpu = var.probe_cpu
+#   probe_memory = var.probe_memory
+    # domain_name = "${local.env_suffix}.${var.domain_name}"
+
 
 
 #   common_tags = local.common_tags

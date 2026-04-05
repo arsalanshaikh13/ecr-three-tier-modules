@@ -32,10 +32,14 @@ gh variable set AWS_REGION --body "us-east-1" --repo "$GH_USER/$REPO_NAME"
 
 gh variable set AWS_REGION --body "us-east-1" --repo "$GH_USER/$REPO_NAME"
 
-gh variable set ENV_VAR --body "dev" --repo "$GH_USER/$REPO_NAME"
-gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME"
-gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME"
-gh variable set AWS_REGION --body "us-east-1" --repo "$GH_USER/$REPO_NAME"
+gh variable set ENV_VAR --body "dev" --repo "$GH_USER/$REPO_NAME" --env dev
+gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME" --env dev
+gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME" --env dev
+gh variable set AWS_REGION --body "us-east-1" --repo "$GH_USER/$REPO_NAME" --env dev
+# gh variable set ENV_VAR --body "prod" --repo "$GH_USER/$REPO_NAME" --env prod
+# gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME" --env prod
+# gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME" --env prod
+# gh variable set AWS_REGION --body "us-east-2" --repo "$GH_USER/$REPO_NAME" --env prod
 
 4. Initialize Local Git
 git init 

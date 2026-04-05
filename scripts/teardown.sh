@@ -1,15 +1,30 @@
 #!/bin/bash
-
+set -euo pipefail
 # ==========================================================
 # Configuration: Update these to match your environment
 # ==========================================================
+# Guardrail: require an explicit environment so teardown never runs with an
+# empty value or the wrong target by accident.
+if [ -z "${1:-}" ]; then
+  echo "Usage: $0 <dev|prod>"
+  echo "Error: ENV argument is required."
+  exit 1
+fi
+
+ENV="$1"
 cd root
-CLUSTER_NAME="lirw-ecs-cluster-dev"
+CLUSTER_NAME="lirw-ecs-cluster-$ENV"
 # Define your services as an array
 SERVICES=("backend-service" "frontend-service" )
 # ASG_NAME="ecs-asg-dev"
-ASG_NAMES=("lirw-ecs-asg-backend-dev" "lirw-ecs-asg-frontend-dev" )
-REGION="us-east-1"
+ASG_NAMES=("lirw-ecs-asg-backend-$ENV" "lirw-ecs-asg-frontend-$ENV" )
+# REGION="us-east-1"
+if [ "$1" = "dev" ]; then
+  REGION="us-east-1"
+else
+  REGION="us-east-2"
+fi
+
 
 echo "======================================================"
 echo " 🛑 Initiating Safe ECS Teardown Sequence..."
@@ -114,8 +129,20 @@ echo "======================================================"
 echo " 🌪️  Infrastructure is clear. Triggering Terraform... "
 echo "======================================================"
 
-# We use the standard command so you still get the [yes/no] safety prompt
-terraform destroy -var-file=dev.tfvars -parallelism=20 -auto-approve
+# Destroy only the explicitly selected environment state so dev/prod remain isolated.
+case "$ENV" in
+  dev)
+    terraform destroy -var-file=tfvars/dev.tfvars -state=./state/dev.tfstate -parallelism=20 -auto-approve
+    ;;
+  prod)
+    terraform destroy -var-file=tfvars/prod.tfvars -state=./state/prod.tfstate -parallelism=20 -auto-approve
+    ;;
+  *)
+    echo "Error: ENV must be one of: dev, prod"
+    exit 1
+    ;;
+esac
+
 
 # terraform destroy -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
 # terraform apply -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener

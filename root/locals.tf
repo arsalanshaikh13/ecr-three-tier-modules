@@ -11,7 +11,7 @@ locals {
     ManagedBy   = "Terraform"
   }
 
-  ecr_names = toset(["frontend", "backend", "database-seeder"])
+  ecr_names = toset(["frontend", "backend", "database-seeder", "probe"])
 
 }
 

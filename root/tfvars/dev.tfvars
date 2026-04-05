@@ -71,17 +71,20 @@ backend_cpu            = 1024 # 0.5 vCPU
 backend_memory         = 2048 # 1 GB
 frontend_cpu           = 512  # 0.5 vCPU
 frontend_memory        = 1024 # 1 GB
+probe_cpu           = 256  # 0.5 vCPU
+probe_memory        = 512 # 1 GB
+
 frontend_desired_count = 2
 backend_desired_count  = 2
 
 frontend_image = "nginx:alpine"
 backend_image  = "node:20-alpine"
-
+probe_image = "alpine:3.20"
 
 db_image  = "alpine/mysql:seeder-latest"
 db_cpu    = 1024
 db_memory = 2048
-db_name   = "lirwEcrDB"
+db_name   = "lirwECSDB"
 # db_password = "secret_password"
 db_username             = "admin123"
 db_port                 = 3306
@@ -94,4 +97,4 @@ db_parameter_group_name = "default.mysql8.0"
 
 # domain name
 domain_name      = "devsandbox.space"
-backend_api_name = "api.devsandbox.space"
+backend_api_name = "api.dev.devsandbox.space"
