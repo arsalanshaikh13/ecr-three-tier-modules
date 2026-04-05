@@ -332,7 +332,7 @@ jobs:
         id: register-probe-task-def
         run: |
           PROBE_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://${{ steps.render-seeder-task-def.outputs.task-definition }}
+            --cli-input-json file://${{ steps.render-seeder-task-def.outputs.task-definition }} \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
 
