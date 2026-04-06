@@ -1,0 +1,65 @@
+name: ECS Build Push Image
+description: Build, tag, and push a service image to Amazon ECR.
+
+inputs:
+  workdir:
+    description: Relative path to the Docker build context.
+    required: true
+  ecr_registry:
+    description: ECR registry hostname from the login step.
+    required: true
+  ecr_repository:
+    description: Target ECR repository name.
+    required: true
+  image_tag:
+    description: Primary image tag to push, for example a Git SHA.
+    required: true
+  additional_tag:
+    description: Optional extra tag to push, for example latest.
+    required: false
+    default: latest
+  dockerfile:
+    description: Optional Dockerfile path relative to workdir.
+    required: false
+    default: ''
+
+outputs:
+  image:
+    description: Fully-qualified image URI for the primary tag.
+    value: ${{ steps.build_push.outputs.image }}
+
+runs:
+  using: composite
+  steps:
+    - id: build_push
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        IMAGE_URI="${{ inputs.ecr_registry }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
+        EXTRA_IMAGE_URI="${{ inputs.ecr_registry }}/${{ inputs.ecr_repository }}:${{ inputs.additional_tag }}"
+
+        cd "${{ inputs.workdir }}"
+
+        # Keep Dockerfile configurable so the same action works for frontend, backend, probe, and seeder.
+        if [ -n "${{ inputs.dockerfile }}" ]; then
+          docker build \
+            --file "${{ inputs.dockerfile }}" \
+            -t "$IMAGE_URI" \
+            -t "$EXTRA_IMAGE_URI" \
+            .
+        else
+          docker build \
+            -t "$IMAGE_URI" \
+            -t "$EXTRA_IMAGE_URI" \
+            .
+        fi
+
+        docker push "$IMAGE_URI"
+
+        # Push the extra tag as well so environments can still opt into a stable moving tag.
+        if [ -n "${{ inputs.additional_tag }}" ]; then
+          docker push "$EXTRA_IMAGE_URI"
+        fi
+
+        echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,28 @@
+name: ECS Rollback Service
+description: Roll back an ECS service to a previous task definition revision.
+
+inputs:
+  cluster:
+    description: ECS cluster name or ARN.
+    required: true
+  service:
+    description: ECS service name to roll back.
+    required: true
+  task_definition:
+    description: Previously known-good task definition ARN or family:revision.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # Reuse the previously captured task definition ARN as the rollback target so
+        # the workflow can recover without guessing which revision was last healthy.
+        aws ecs update-service \
+          --cluster "${{ inputs.cluster }}" \
+          --service "${{ inputs.service }}" \
+          --task-definition "${{ inputs.task_definition }}" \
+          --force-new-deployment

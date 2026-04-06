@@ -1,0 +1,44 @@
+name: ECS Run Task
+description: Run an ECS task for non-awsvpc modes such as EC2 bridge or host networking.
+
+inputs:
+  cluster:
+    description: ECS cluster name or ARN.
+    required: true
+  task_definition:
+    description: Task definition ARN or family:revision to run.
+    required: true
+  launch_type:
+    description: Launch type for the task, typically EC2 for non-awsvpc tasks.
+    required: false
+    default: EC2
+
+outputs:
+  task_arn:
+    description: ARN of the started ECS task.
+    value: ${{ steps.run_task.outputs.task_arn }}
+
+runs:
+  using: composite
+  steps:
+    - id: run_task
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Use this action when the task definition does not expect awsvpc networking,
+        # such as EC2 bridge/host mode jobs like the current DB seeder.
+        # Keep the non-awsvpc path simple: no network configuration should be passed here.
+        TASK_ARN=$(aws ecs run-task \
+          --cluster "${{ inputs.cluster }}" \
+          --task-definition "${{ inputs.task_definition }}" \
+          --launch-type "${{ inputs.launch_type }}" \
+          --query "tasks[0].taskArn" \
+          --output text)
+
+        if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+          echo "Error: ECS run-task did not return a task ARN."
+          exit 1
+        fi
+
+        echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"

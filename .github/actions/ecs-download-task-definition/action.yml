@@ -1,0 +1,43 @@
+name: ECS Download Task Definition
+description: Download the current ECS task definition JSON for later rendering or registration.
+
+inputs:
+  task_definition_name:
+    description: ECS task definition family or ARN to download.
+    required: true
+  output_path:
+    description: File path to write the downloaded task definition JSON.
+    required: true
+
+outputs:
+  output_path:
+    description: File path containing the downloaded task definition JSON.
+    value: ${{ inputs.output_path }}
+  task_definition_arn:
+    description: The currently active task definition ARN captured alongside the JSON file.
+    value: ${{ steps.download.outputs.task_definition_arn }}
+
+runs:
+  using: composite
+  steps:
+    - id: download
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Keep task-definition downloads in one action so service, probe, and seeder
+        # flows all start from the same describe-task-definition behavior.
+        # Persist the current task definition locally so later steps can render a new image into it.
+        # We also expose the ARN because rollback logic wants an identifier, while render logic wants a file.
+        aws ecs describe-task-definition \
+          --task-definition "${{ inputs.task_definition_name }}" \
+          --query taskDefinition > "${{ inputs.output_path }}"
+
+        TASK_DEFINITION_ARN=$(jq -r '.taskDefinitionArn' "${{ inputs.output_path }}")
+
+        if [ -z "$TASK_DEFINITION_ARN" ] || [ "$TASK_DEFINITION_ARN" = "null" ]; then
+          echo "Error: Could not extract taskDefinitionArn from ${{ inputs.output_path }}"
+          exit 1
+        fi
+
+        echo "task_definition_arn=$TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"

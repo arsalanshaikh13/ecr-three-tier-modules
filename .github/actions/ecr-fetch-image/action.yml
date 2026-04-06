@@ -1,0 +1,40 @@
+name: ECR Fetch Image
+description: Fetch the latest image tag from an ECR repository and return a full image URI.
+
+inputs:
+  ecr_registry:
+    description: ECR registry hostname from the login step.
+    required: true
+  ecr_repository:
+    description: Target ECR repository name.
+    required: true
+
+outputs:
+  image:
+    description: Fully-qualified image URI for the most recently pushed tag.
+    value: ${{ steps.fetch.outputs.image }}
+  image_tag:
+    description: Latest discovered image tag.
+    value: ${{ steps.fetch.outputs.image_tag }}
+
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Pull the newest tag so manual runs can reuse the last good image without rebuilding.
+        FETCHED_TAG=$(aws ecr describe-images \
+          --repository-name "${{ inputs.ecr_repository }}" \
+          --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+          --output text)
+
+        if [ "$FETCHED_TAG" = "None" ] || [ -z "$FETCHED_TAG" ]; then
+          echo "Error: Could not find any images in ECR repository ${{ inputs.ecr_repository }}"
+          exit 1
+        fi
+
+        echo "image_tag=$FETCHED_TAG" >> "$GITHUB_OUTPUT"
+        echo "image=${{ inputs.ecr_registry }}/${{ inputs.ecr_repository }}:$FETCHED_TAG" >> "$GITHUB_OUTPUT"

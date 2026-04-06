@@ -1,0 +1,55 @@
+name: ECS Run Task Awsvpc
+description: Run an ECS task with awsvpc network configuration, typically for Fargate or awsvpc-mode ECS tasks.
+
+inputs:
+  cluster:
+    description: ECS cluster name or ARN.
+    required: true
+  task_definition:
+    description: Task definition ARN or family:revision to run.
+    required: true
+  launch_type:
+    description: Launch type for the task, typically FARGATE for awsvpc probe tasks.
+    required: false
+    default: FARGATE
+  subnet_ids_json:
+    description: Compact JSON array of subnet IDs, for example [\"subnet-1\",\"subnet-2\"].
+    required: true
+  security_group_id:
+    description: Security group ID to attach to the task ENI.
+    required: true
+  assign_public_ip:
+    description: Whether to assign a public IP. Valid values are ENABLED or DISABLED.
+    required: false
+    default: DISABLED
+
+outputs:
+  task_arn:
+    description: ARN of the started ECS task.
+    value: ${{ steps.run_task.outputs.task_arn }}
+
+runs:
+  using: composite
+  steps:
+    - id: run_task
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Use this action when the task definition expects awsvpc networking,
+        # such as the probe task that runs in private subnets with its own ENI.
+        # awsvpc tasks need explicit subnets and security groups because the task gets its own ENI.
+        TASK_ARN=$(aws ecs run-task \
+          --cluster "${{ inputs.cluster }}" \
+          --task-definition "${{ inputs.task_definition }}" \
+          --launch-type "${{ inputs.launch_type }}" \
+          --network-configuration "{\"awsvpcConfiguration\":{\"subnets\":${{ inputs.subnet_ids_json }},\"securityGroups\":[\"${{ inputs.security_group_id }}\"],\"assignPublicIp\":\"${{ inputs.assign_public_ip }}\"}}" \
+          --query "tasks[0].taskArn" \
+          --output text)
+
+        if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+          echo "Error: ECS run-task with awsvpc did not return a task ARN."
+          exit 1
+        fi
+
+        echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"

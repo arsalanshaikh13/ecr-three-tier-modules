@@ -1,0 +1,23 @@
+name: ECS Wait Service Stable
+description: Wait for an ECS service to become stable after deployment or rollback.
+
+inputs:
+  cluster:
+    description: ECS cluster name or ARN.
+    required: true
+  service:
+    description: ECS service name to wait on.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # Use this after probe success or rollback so ECS/ALB stability becomes the final
+        # confirmation step rather than blocking the earlier smoke-test flow.
+        aws ecs wait services-stable \
+          --cluster "${{ inputs.cluster }}" \
+          --services "${{ inputs.service }}"
