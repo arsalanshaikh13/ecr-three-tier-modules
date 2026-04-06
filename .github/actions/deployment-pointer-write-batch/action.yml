@@ -1,0 +1,45 @@
+name: Deployment Pointer Write Batch
+description: Update deployment pointers in SSM for every metadata file in an environment-level batch.
+
+inputs:
+  metadata_glob:
+    description: Glob pattern for deployment metadata files to process.
+    required: true
+  project:
+    description: Project name used in the SSM parameter prefix.
+    required: true
+  environment:
+    description: Deployment environment such as dev or prod.
+    required: true
+  task_definition_field:
+    description: Metadata JSON field to use as the pointer value.
+    required: false
+    default: newTaskDefinitionArn
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+
+        # Probe runs once per environment, so we batch pointer writes here instead of
+        # splitting the workflow into separate per-component success jobs.
+        for METADATA_FILE in ${{ inputs.metadata_glob }}; do
+          COMPONENT=$(jq -r '.component' "$METADATA_FILE")
+          TASK_DEFINITION_ARN=$(jq -r '.${{ inputs.task_definition_field }}' "$METADATA_FILE")
+          PARAMETER_PREFIX="/${{ inputs.project }}/${{ inputs.environment }}/${COMPONENT}"
+
+          aws ssm put-parameter \
+            --name "${PARAMETER_PREFIX}/current-task-definition-arn" \
+            --type String \
+            --value "$TASK_DEFINITION_ARN" \
+            --overwrite
+
+          aws ssm put-parameter \
+            --name "${PARAMETER_PREFIX}/last-known-good-task-definition-arn" \
+            --type String \
+            --value "$TASK_DEFINITION_ARN" \
+            --overwrite
+        done

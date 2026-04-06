@@ -1,0 +1,110 @@
+name: Deployment Manifest Write Batch
+description: Generate deployment manifests from a batch of metadata files and upload them to S3.
+
+inputs:
+  metadata_glob:
+    description: Glob pattern for deployment metadata files to process.
+    required: true
+  manifest_dir:
+    description: Local directory where manifest files will be written.
+    required: true
+  bucket:
+    description: S3 bucket that stores deployment manifests.
+    required: true
+  bucket_prefix_root:
+    description: S3 key root before component/status folders are appended.
+    required: true
+  project:
+    description: Project name recorded in the manifest.
+    required: true
+  environment:
+    description: Deployment environment recorded in the manifest.
+    required: true
+  status:
+    description: Manifest status such as successful or failed.
+    required: true
+  reason:
+    description: Human-readable reason captured from probe or rollback logic.
+    required: true
+  workflow_name:
+    description: GitHub workflow name for traceability.
+    required: true
+  actor:
+    description: GitHub actor that triggered the workflow.
+    required: true
+  summary_file:
+    description: Optional markdown file to append a success summary to.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+
+        mkdir -p "${{ inputs.manifest_dir }}"
+
+        # Batch manifest generation keeps the environment-level probe job intact while still
+        # moving the repetitive manifest persistence logic into a reusable action.
+        for METADATA_FILE in ${{ inputs.metadata_glob }}; do
+          COMPONENT=$(jq -r '.component' "$METADATA_FILE")
+          CLUSTER=$(jq -r '.cluster' "$METADATA_FILE")
+          SERVICE=$(jq -r '.service' "$METADATA_FILE")
+          PREVIOUS_TASK_DEF_ARN=$(jq -r '.previousTaskDefinitionArn' "$METADATA_FILE")
+          NEW_TASK_DEF_ARN=$(jq -r '.newTaskDefinitionArn' "$METADATA_FILE")
+          IMAGE_URI=$(jq -r '.imageUri' "$METADATA_FILE")
+          COMMIT_SHA=$(jq -r '.commitSha' "$METADATA_FILE")
+          RUN_ID=$(jq -r '.workflowRunId' "$METADATA_FILE")
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          MANIFEST_FILE="${{ inputs.manifest_dir }}/${COMPONENT}-${{ inputs.environment }}-${{ inputs.status }}-${GITHUB_RUN_ID}.json"
+          MANIFEST_S3_KEY="${{ inputs.bucket_prefix_root }}/${COMPONENT}/${{ inputs.status }}/$(basename "$MANIFEST_FILE")"
+
+          jq -n \
+            --arg project "${{ inputs.project }}" \
+            --arg environment "${{ inputs.environment }}" \
+            --arg component "$COMPONENT" \
+            --arg cluster "$CLUSTER" \
+            --arg service "$SERVICE" \
+            --arg previousTaskDefinitionArn "$PREVIOUS_TASK_DEF_ARN" \
+            --arg taskDefinitionArn "$NEW_TASK_DEF_ARN" \
+            --arg imageUri "$IMAGE_URI" \
+            --arg commitSha "$COMMIT_SHA" \
+            --arg workflowRunId "$RUN_ID" \
+            --arg workflowName "${{ inputs.workflow_name }}" \
+            --arg deployedBy "${{ inputs.actor }}" \
+            --arg deployedAt "$TIMESTAMP" \
+            --arg status "${{ inputs.status }}" \
+            --arg reason "${{ inputs.reason }}" \
+            '{
+              project: $project,
+              environment: $environment,
+              component: $component,
+              cluster: $cluster,
+              service: $service,
+              previousTaskDefinitionArn: $previousTaskDefinitionArn,
+              taskDefinitionArn: $taskDefinitionArn,
+              imageUri: $imageUri,
+              commitSha: $commitSha,
+              workflowRunId: $workflowRunId,
+              workflowName: $workflowName,
+              deployedBy: $deployedBy,
+              deployedAt: $deployedAt,
+              status: $status,
+              reason: $reason
+            }' > "$MANIFEST_FILE"
+
+          aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY"
+
+          if [ -n "${{ inputs.summary_file }}" ]; then
+            {
+              echo "### ${COMPONENT} deployment ${{ inputs.status }} in ${{ inputs.environment }}"
+              echo "- Task definition: \`$NEW_TASK_DEF_ARN\`"
+              echo "- Image: \`$IMAGE_URI\`"
+              echo "- Reason: ${{ inputs.reason }}"
+              echo
+            } >> "${{ inputs.summary_file }}"
+          fi
+        done

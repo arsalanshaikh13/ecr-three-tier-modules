@@ -1,0 +1,123 @@
+name: Deployment Manifest Write
+description: Generate a deployment manifest JSON file and upload it to S3.
+
+inputs:
+  manifest_dir:
+    description: Local directory where the manifest file will be written.
+    required: true
+  bucket:
+    description: S3 bucket that stores deployment manifests.
+    required: true
+  bucket_prefix:
+    description: S3 key prefix under which the manifest will be stored.
+    required: true
+  project:
+    description: Project name recorded in the manifest.
+    required: true
+  environment:
+    description: Deployment environment recorded in the manifest.
+    required: true
+  component:
+    description: Component name recorded in the manifest.
+    required: true
+  cluster:
+    description: ECS cluster recorded in the manifest.
+    required: true
+  service:
+    description: ECS service recorded in the manifest.
+    required: true
+  task_definition_arn:
+    description: Task definition ARN associated with the manifest status.
+    required: true
+  status:
+    description: Manifest status such as successful, failed, or rolled_back.
+    required: true
+  reason:
+    description: Human-readable reason captured from probe or rollback logic.
+    required: true
+  timestamp:
+    description: ISO-8601 timestamp for the manifest.
+    required: true
+  workflow_run_id:
+    description: GitHub workflow run id for traceability.
+    required: true
+  workflow_name:
+    description: GitHub workflow name for traceability.
+    required: true
+  actor:
+    description: GitHub actor that triggered the workflow.
+    required: true
+  previous_task_definition_arn:
+    description: Previous task definition ARN, when relevant.
+    required: false
+    default: ""
+  image_uri:
+    description: Image URI deployed for this revision, when relevant.
+    required: false
+    default: ""
+  commit_sha:
+    description: Commit SHA associated with this deployment, when relevant.
+    required: false
+    default: ""
+
+outputs:
+  manifest_file:
+    description: Local path to the generated manifest file.
+    value: ${{ steps.write.outputs.manifest_file }}
+  manifest_s3_key:
+    description: S3 object key used for the uploaded manifest.
+    value: ${{ steps.write.outputs.manifest_s3_key }}
+
+runs:
+  using: composite
+  steps:
+    - id: write
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        mkdir -p "${{ inputs.manifest_dir }}"
+
+        # Manifest history complements the SSM pointer model: SSM stores the trusted
+        # recovery target, while S3 manifests provide the auditable deployment timeline.
+        MANIFEST_FILE="${{ inputs.manifest_dir }}/${{ inputs.component }}-${{ inputs.environment }}-${{ inputs.status }}-${{ inputs.workflow_run_id }}.json"
+        MANIFEST_S3_KEY="${{ inputs.bucket_prefix }}/$(basename "$MANIFEST_FILE")"
+
+        jq -n \
+          --arg project "${{ inputs.project }}" \
+          --arg environment "${{ inputs.environment }}" \
+          --arg component "${{ inputs.component }}" \
+          --arg cluster "${{ inputs.cluster }}" \
+          --arg service "${{ inputs.service }}" \
+          --arg taskDefinitionArn "${{ inputs.task_definition_arn }}" \
+          --arg previousTaskDefinitionArn "${{ inputs.previous_task_definition_arn }}" \
+          --arg imageUri "${{ inputs.image_uri }}" \
+          --arg commitSha "${{ inputs.commit_sha }}" \
+          --arg workflowRunId "${{ inputs.workflow_run_id }}" \
+          --arg workflowName "${{ inputs.workflow_name }}" \
+          --arg deployedBy "${{ inputs.actor }}" \
+          --arg deployedAt "${{ inputs.timestamp }}" \
+          --arg status "${{ inputs.status }}" \
+          --arg reason "${{ inputs.reason }}" \
+          '{
+            project: $project,
+            environment: $environment,
+            component: $component,
+            cluster: $cluster,
+            service: $service,
+            taskDefinitionArn: $taskDefinitionArn,
+            previousTaskDefinitionArn: ($previousTaskDefinitionArn | if . == "" then null else . end),
+            imageUri: ($imageUri | if . == "" then null else . end),
+            commitSha: ($commitSha | if . == "" then null else . end),
+            workflowRunId: $workflowRunId,
+            workflowName: $workflowName,
+            deployedBy: $deployedBy,
+            deployedAt: $deployedAt,
+            status: $status,
+            reason: $reason
+          }' > "$MANIFEST_FILE"
+
+        aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY"
+
+        echo "manifest_file=$MANIFEST_FILE" >> "$GITHUB_OUTPUT"
+        echo "manifest_s3_key=$MANIFEST_S3_KEY" >> "$GITHUB_OUTPUT"

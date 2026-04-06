@@ -12,6 +12,14 @@ on:
       - ".github/workflows/**"
   workflow_dispatch:
     inputs:
+      action_type:
+        description: "Run a normal deploy flow or trigger a manual rollback"
+        type: choice
+        required: true
+        default: deploy
+        options:
+          - deploy
+          - rollback
       target_environment:
         description: "Target environment to deploy"
         type: choice
@@ -46,10 +54,27 @@ on:
         type: boolean
         required: true
         default: false
+      rollback_component:
+        description: "Component to roll back when action_type is rollback"
+        type: choice
+        required: false
+        default: backend
+        options:
+          - frontend
+          - backend
+      rollback_task_definition_arn:
+        description: "Optional explicit task definition ARN for manual rollback"
+        type: string
+        required: false
+      rollback_manifest_s3_key:
+        description: "Optional S3 manifest key whose taskDefinitionArn should be rolled back"
+        type: string
+        required: false
 
 permissions:
   id-token: write
   contents: read
+  issues: write
 
 jobs:
   # ---------------------------------------------------------
@@ -94,6 +119,13 @@ jobs:
 
           # 2. MANUAL TRIGGER: Include if EITHER build or get is true
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual rollback is a separate job path, so deployment matrices should stay empty.
+            if [ "${{ inputs.action_type }}" == "rollback" ]; then
+              echo "matrix=[]" >> $GITHUB_OUTPUT
+              echo "env_matrix=[]" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
             # Check Frontend
             if [[ "${{ inputs.build_frontend }}" == "true" || "${{ inputs.get_frontend }}" == "true" ]]; then
                COMPONENTS+=("frontend")
@@ -202,17 +234,41 @@ jobs:
           # The download action now returns both the JSON file for rendering and the ARN for future rollback logic.
           echo "Current task definition ARN: ${{ steps.current-task-def.outputs.task_definition_arn }}"
 
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-${{ matrix.component }}.json
+          container-name: ${{ vars.PROJECT_NAME }}_${{ matrix.component }}
+          # The reusable ECR fetch action exposes the image URI as `image`, so keep this aligned.
+          image: ${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}
+
+      - name: Register new task definition
+        id: register-task-def
+        run: |
+          # Register explicitly so the workflow has the exact deployed ARN for manifests, SSM pointers, and rollback metadata.
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
       - name: Persist deployment metadata for later jobs
         run: |
-          # Store deploy metadata per component/environment so finalize and rollback jobs can
-          # operate on the exact service and previously running task definition.
+          # Store deploy metadata per component/environment so probe, finalize, and rollback
+          # all operate on the same versioned identifiers instead of re-discovering state later.
           cat > deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json <<EOF
           {
             "component": "${{ matrix.component }}",
             "environment": "${{ matrix.environment }}",
             "cluster": "${{ env.ECS_CLUSTER }}",
             "service": "${{ matrix.component }}-service",
-            "previousTaskDefinitionArn": "${{ steps.current-task-def.outputs.task_definition_arn }}"
+            "previousTaskDefinitionArn": "${{ steps.current-task-def.outputs.task_definition_arn }}",
+            "newTaskDefinitionArn": "${{ steps.register-task-def.outputs.task_definition_arn }}",
+            "imageUri": "${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}",
+            "commitSha": "${{ github.sha }}",
+            "workflowRunId": "${{ github.run_id }}"
           }
           EOF
 
@@ -223,23 +279,14 @@ jobs:
           path: deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json
           if-no-files-found: error
 
-      - name: Fill in the new image ID in the Amazon ECS task definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition-${{ matrix.component }}.json
-          container-name: ${{ vars.PROJECT_NAME }}_${{ matrix.component }}
-          # The reusable ECR fetch action exposes the image URI as `image`, so keep this aligned.
-          image: ${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}
-
-      - name: Deploy Amazon ECS task definition
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ matrix.component }}-service
-          cluster: ${{ env.ECS_CLUSTER }}
-          # Let probe/finalize control readiness so the workflow can run deeper smoke tests before blocking on ECS stability.
-          wait-for-service-stability: false
+      - name: Update ECS service to new task definition
+        run: |
+          # Update the service explicitly so deep probe checks can gate whether this new revision is accepted as known-good.
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ matrix.component }}-service" \
+            --task-definition "${{ steps.register-task-def.outputs.task_definition_arn }}" \
+            --force-new-deployment
 
   # ---------------------------------------------------------
   # 3. POST-DEPLOY PROBE (Runs once per environment)
@@ -337,6 +384,7 @@ jobs:
             --tasks "${{ steps.run-probe.outputs.task_arn }}"
 
       - name: Check probe task result
+        id: probe-result
         run: |
           EXIT_CODE=$(aws ecs describe-tasks \
             --cluster "${{ env.ECS_CLUSTER }}" \
@@ -367,6 +415,8 @@ jobs:
             --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
             --output text)
 
+          LOG_FILE="probe-logs-${{ matrix.environment }}.txt"
+
           echo "Probe exit code: $EXIT_CODE"
           echo "Task stopped reason: $STOPPED_REASON"
           echo "Container reason: $CONTAINER_REASON"
@@ -381,15 +431,131 @@ jobs:
               --log-group-name "$LOG_GROUP_NAME" \
               --log-stream-name "$LOG_STREAM_NAME" \
               --query 'events[*].message' \
-              --output text || true
+              --output text | tee "$LOG_FILE" || true
             echo "----- End Probe Logs -----"
           else
             echo "Probe log stream metadata was not available, so no CloudWatch logs were printed in CI."
+            echo "Probe log stream metadata was not available, so no CloudWatch logs were printed in CI." > "$LOG_FILE"
           fi
+
+          PROBE_REASON="Probe exit code: $EXIT_CODE | Task stopped reason: $STOPPED_REASON | Container reason: $CONTAINER_REASON"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "log_file=$LOG_FILE" >> "$GITHUB_OUTPUT"
+          {
+            echo "probe_reason<<EOF"
+            echo "$PROBE_REASON"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
           if [ "$EXIT_CODE" != "0" ]; then
             exit 1
           fi
+
+      - name: Download deployment metadata artifacts
+        if: ${{ always() }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deploy-metadata-*-${{ matrix.environment }}
+          path: deploy-metadata
+          merge-multiple: true
+
+      - name: Persist successful deployment state and manifests
+        if: ${{ success() }}
+        id: success-manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p manifests/success
+          SUMMARY_FILE="manifests/success/pr-summary-${{ matrix.environment }}.md"
+          touch "$SUMMARY_FILE"
+          echo "summary_file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Update deployment pointers after probe success
+        if: ${{ success() }}
+        uses: ./.github/actions/deployment-pointer-write-batch
+        with:
+          metadata_glob: deploy-metadata/deploy-metadata-*-${{ matrix.environment }}.json
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+
+      - name: Persist successful deployment state and manifests
+        if: ${{ success() }}
+        uses: ./.github/actions/deployment-manifest-write-batch
+        with:
+          metadata_glob: deploy-metadata/deploy-metadata-*-${{ matrix.environment }}.json
+          manifest_dir: manifests/success
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          bucket_prefix_root: ${{ vars.PROJECT_NAME }}/deployments/${{ matrix.environment }}
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          status: successful
+          reason: ${{ steps.probe-result.outputs.probe_reason }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          summary_file: ${{ steps.success-manifests.outputs.summary_file }}
+
+      - name: Upload successful deployment manifests
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: successful-deployment-manifests-${{ matrix.environment }}
+          path: manifests/success
+          if-no-files-found: error
+
+      - name: Comment success summary on associated pull request
+        if: ${{ success() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('${{ steps.success-manifests.outputs.summary_file }}', 'utf8');
+
+            let prNumber = context.payload.pull_request?.number;
+
+            if (!prNumber) {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+              });
+              prNumber = associated.data[0]?.number;
+            }
+
+            if (!prNumber) {
+              core.info('No associated pull request found for deployment summary comment.');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });
+
+      - name: Persist failed deployment manifests
+        if: ${{ failure() }}
+        uses: ./.github/actions/deployment-manifest-write-batch
+        with:
+          metadata_glob: deploy-metadata/deploy-metadata-*-${{ matrix.environment }}.json
+          manifest_dir: manifests/failure
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          bucket_prefix_root: ${{ vars.PROJECT_NAME }}/deployments/${{ matrix.environment }}
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          status: failed
+          reason: ${{ steps.probe-result.outputs.probe_reason }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+
+      - name: Upload failed deployment manifests
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-deployment-manifests-${{ matrix.environment }}
+          path: manifests/failure
+          if-no-files-found: error
 
   # ---------------------------------------------------------
   # 4. FINALIZE DEPLOY (Wait for ECS stability only after probe success)
@@ -438,12 +604,12 @@ jobs:
           service: ${{ steps.metadata.outputs.service }}
 
   # ---------------------------------------------------------
-  # 5. ROLLBACK (Use previous task definition when probe/finalize fails)
+  # 5. ROLLBACK (Use SSM last-known-good pointer when probe/finalize fails)
   # ---------------------------------------------------------
   rollback:
     name: Roll Back ${{ matrix.component }} (${{ matrix.environment }})
     needs: [detect-changes, build-and-deploy, probe-app, finalize-deploy]
-    if: ${{ failure() && needs.detect-changes.outputs.matrix != '[]' }}
+    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && (needs.probe-app.result == 'failure' || needs.finalize-deploy.result == 'failure') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -473,18 +639,34 @@ jobs:
         run: |
           METADATA_FILE="deploy-metadata/deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json"
 
-          # Rollback uses the previously captured task definition ARN so recovery targets the
-          # exact revision that was serving before this deployment started.
+          # Metadata still provides the service identity and attempted revision, while the
+          # rollback target itself comes from the SSM last-known-good pointer.
           echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
           echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
-          echo "previous_task_definition_arn=$(jq -r '.previousTaskDefinitionArn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "attempted_task_definition_arn=$(jq -r '.newTaskDefinitionArn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Read last-known-good rollback pointer
+        id: rollback-pointer
+        uses: ./.github/actions/deployment-pointer-read
+        with:
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          component: ${{ matrix.component }}
+
+      - name: Validate rollback target exists
+        shell: bash
+        run: |
+          if [ -z "${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}" ]; then
+            echo "Error: No last-known-good task definition ARN found in SSM for ${{ matrix.component }} (${{ matrix.environment }})."
+            exit 1
+          fi
 
       - name: Roll back ECS service
         uses: ./.github/actions/ecs-rollback-service
         with:
           cluster: ${{ steps.rollback-metadata.outputs.cluster }}
           service: ${{ steps.rollback-metadata.outputs.service }}
-          task_definition: ${{ steps.rollback-metadata.outputs.previous_task_definition_arn }}
+          task_definition: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
 
       - name: Wait for rollback stability
         uses: ./.github/actions/ecs-wait-service-stable
@@ -492,8 +674,208 @@ jobs:
           cluster: ${{ steps.rollback-metadata.outputs.cluster }}
           service: ${{ steps.rollback-metadata.outputs.service }}
 
+      - name: Reset deployment pointers after rollback
+        uses: ./.github/actions/deployment-pointer-write
+        with:
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          component: ${{ matrix.component }}
+          current_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          last_known_good_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+
+      - name: Capture rollback timestamp
+        id: rollback-timestamp
+        shell: bash
+        run: |
+          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Persist rollback state and manifest
+        id: rollback-manifest
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/rollback
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          bucket_prefix: ${{ vars.PROJECT_NAME }}/deployments/${{ matrix.environment }}/${{ matrix.component }}/rollback
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          component: ${{ matrix.component }}
+          cluster: ${{ steps.rollback-metadata.outputs.cluster }}
+          service: ${{ steps.rollback-metadata.outputs.service }}
+          task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.rollback-metadata.outputs.attempted_task_definition_arn }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.rollback-timestamp.outputs.value }}
+          status: rolled_back
+          reason: Rollback completed using the last-known-good SSM pointer after probe or finalize failure.
+
+      - name: Upload rollback manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-manifests-${{ matrix.component }}-${{ matrix.environment }}
+          path: manifests/rollback
+          if-no-files-found: error
+
   # ---------------------------------------------------------
-  # 6. DB SEEDING (Manual Only)
+  # 6. MANUAL ROLLBACK (Workflow dispatch only)
+  # ---------------------------------------------------------
+  manual-rollback:
+    name: Manual Roll Back ${{ inputs.rollback_component }} (${{ inputs.target_environment }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    env:
+      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Validate manual rollback inputs
+        shell: bash
+        run: |
+          # Manual rollback is intentionally scoped to one environment and one component
+          # so the operator can make a deliberate recovery choice with clear audit logs.
+          if [ "${{ inputs.target_environment }}" = "all" ]; then
+            echo "Error: manual rollback must target a single environment, not 'all'."
+            exit 1
+          fi
+
+      - name: Capture current service state before manual rollback
+        id: current-service-state
+        shell: bash
+        run: |
+          CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ inputs.rollback_component }}-service" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "current_task_definition_arn=$CURRENT_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve manual rollback target
+        id: resolve-rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Resolution order mirrors standard production rollback practice:
+          # explicit ARN > manifest history > trusted SSM pointer.
+          if [ -n "${{ inputs.rollback_task_definition_arn }}" ]; then
+            echo "task_definition_arn=${{ inputs.rollback_task_definition_arn }}" >> "$GITHUB_OUTPUT"
+            echo "reason=Manual rollback used the explicitly provided task definition ARN." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "${{ inputs.rollback_manifest_s3_key }}" ]; then
+            aws s3 cp "s3://${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}/${{ inputs.rollback_manifest_s3_key }}" rollback-manifest-source.json >/dev/null
+            MANIFEST_TASK_DEF_ARN=$(jq -r '.taskDefinitionArn' rollback-manifest-source.json)
+
+            if [ -z "$MANIFEST_TASK_DEF_ARN" ] || [ "$MANIFEST_TASK_DEF_ARN" = "null" ]; then
+              echo "Error: manifest did not contain a taskDefinitionArn."
+              exit 1
+            fi
+
+            echo "task_definition_arn=$MANIFEST_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+            echo "reason=Manual rollback used the task definition ARN recorded in the selected deployment manifest." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "task_definition_arn=" >> "$GITHUB_OUTPUT"
+
+      - name: Read last-known-good rollback pointer
+        id: manual-rollback-pointer
+        if: ${{ steps.resolve-rollback.outputs.task_definition_arn == '' }}
+        uses: ./.github/actions/deployment-pointer-read
+        with:
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ inputs.target_environment }}
+          component: ${{ inputs.rollback_component }}
+
+      - name: Choose final manual rollback target
+        id: manual-rollback-target
+        shell: bash
+        run: |
+          TARGET_ARN="${{ steps.resolve-rollback.outputs.task_definition_arn }}"
+          TARGET_REASON="${{ steps.resolve-rollback.outputs.reason }}"
+
+          if [ -z "$TARGET_ARN" ]; then
+            TARGET_ARN="${{ steps.manual-rollback-pointer.outputs.last_known_good_task_definition_arn }}"
+            TARGET_REASON="Manual rollback defaulted to the trusted SSM last-known-good pointer."
+          fi
+
+          if [ -z "$TARGET_ARN" ]; then
+            echo "Error: no rollback target could be resolved."
+            exit 1
+          fi
+
+          echo "task_definition_arn=$TARGET_ARN" >> "$GITHUB_OUTPUT"
+          echo "reason=$TARGET_REASON" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back ECS service
+        uses: ./.github/actions/ecs-rollback-service
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.rollback_component }}-service
+          task_definition: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+
+      - name: Wait for rollback stability
+        uses: ./.github/actions/ecs-wait-service-stable
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.rollback_component }}-service
+
+      - name: Reset deployment pointers after manual rollback
+        uses: ./.github/actions/deployment-pointer-write
+        with:
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ inputs.target_environment }}
+          component: ${{ inputs.rollback_component }}
+          current_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+          last_known_good_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+
+      - name: Capture manual rollback timestamp
+        id: manual-rollback-timestamp
+        shell: bash
+        run: |
+          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Persist manual rollback manifest
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/manual-rollback
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          bucket_prefix: ${{ vars.PROJECT_NAME }}/deployments/${{ inputs.target_environment }}/${{ inputs.rollback_component }}/rollback
+          project: ${{ vars.PROJECT_NAME }}
+          environment: ${{ inputs.target_environment }}
+          component: ${{ inputs.rollback_component }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.rollback_component }}-service
+          task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.current-service-state.outputs.current_task_definition_arn }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.manual-rollback-timestamp.outputs.value }}
+          status: rolled_back
+          reason: ${{ steps.manual-rollback-target.outputs.reason }}
+
+      - name: Upload manual rollback manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-rollback-manifests-${{ inputs.rollback_component }}-${{ inputs.target_environment }}
+          path: manifests/manual-rollback
+          if-no-files-found: error
+
+  # ---------------------------------------------------------
+  # 7. DB SEEDING (Manual Only)
   # ---------------------------------------------------------
   seed-database:
     name: Build & Run DB Seeder

@@ -1,0 +1,42 @@
+name: Deployment Pointer Write
+description: Update SSM deployment pointers after a successful deploy or rollback.
+
+inputs:
+  project:
+    description: Project name used in the SSM parameter prefix.
+    required: true
+  environment:
+    description: Deployment environment such as dev or prod.
+    required: true
+  component:
+    description: Component name such as frontend or backend.
+    required: true
+  current_task_definition_arn:
+    description: Task definition ARN to store as the current deployed revision.
+    required: true
+  last_known_good_task_definition_arn:
+    description: Task definition ARN to store as the trusted rollback target.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # We only update these pointers when a revision is accepted as good
+        # or when rollback succeeds. That keeps automatic rollback deterministic.
+        PARAMETER_PREFIX="/${{ inputs.project }}/${{ inputs.environment }}/${{ inputs.component }}"
+
+        aws ssm put-parameter \
+          --name "${PARAMETER_PREFIX}/current-task-definition-arn" \
+          --type String \
+          --value "${{ inputs.current_task_definition_arn }}" \
+          --overwrite
+
+        aws ssm put-parameter \
+          --name "${PARAMETER_PREFIX}/last-known-good-task-definition-arn" \
+          --type String \
+          --value "${{ inputs.last_known_good_task_definition_arn }}" \
+          --overwrite
