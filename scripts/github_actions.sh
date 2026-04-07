@@ -29,52 +29,67 @@ REPO_NAME="ecr-three-tier-modules"
 # gh variable set AWS_REGION --body "us-east-2" --repo "$GH_USER/$REPO_NAME" --env prod
 
 
-git add .; git commit -m "full rollback, entering and capturing manifests files creating appropriate actions files for them, promotion.yml file completely created"; 
-git push -u origin multi-env-actions;
+# git add .; git commit -m "full rollback, entering and capturing manifests files creating appropriate actions files for them, promotion.yml file completely created"; 
+# git push -u origin multi-env-actions;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
 # git tag -l "lirw-*" | xargs git tag -d
 
-# # Capture current time so we can identify the run we just triggered.
-# START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+# Capture current time so we can identify the run we just triggered.
+START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-gh workflow run deploy.yml \
+# Fail immediately if GitHub cannot dispatch the workflow. If this returns HTTP 422
+# while the branch file has workflow_dispatch, the default/main branch likely still
+# has an older workflow definition registered by GitHub.
+if ! gh workflow run ./github/workflows/deploy.yml \
+  --repo "$GH_USER/$REPO_NAME" \
   --ref multi-env-actions \
   -f action_type=deploy \
-  -f target_environment=all \
+  -f target_environment=dev \
   -f build_frontend=true \
   -f get_frontend=false \
   -f build_backend=true \
   -f get_backend=false \
-  -f run_seeding=true
+  -f run_seeding=true; then
+  echo "Failed to dispatch deploy.yml."
+  echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
+  exit 1
+fi
 
 # Small delay to allow GitHub to register the new run in run list.
 sleep 3
 
 # Fetch both internal run ID and human-readable run number for the latest dispatch after START_TS.
 RUN_ID=$(gh run list \
+  --repo "$GH_USER/$REPO_NAME" \
   --workflow deploy.yml \
-  --branch main \
+  --branch multi-env-actions \
   --event workflow_dispatch \
   --limit 20 \
   --json databaseId,number,createdAt \
   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .databaseId")
 
 RUN_NO=$(gh run list \
+  --repo "$GH_USER/$REPO_NAME" \
   --workflow deploy.yml \
-  --branch main \
+  --branch multi-env-actions \
   --event workflow_dispatch \
   --limit 20 \
   --json number,createdAt \
   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .number")
 
 echo "Triggered deploy workflow: RUN_ID=$RUN_ID RUN_NO=$RUN_NO"
-gh run view "$RUN_ID"
+if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+  echo "Failed to resolve the dispatched run id."
+  exit 1
+fi
+
+gh run view "$RUN_ID" --repo "$GH_USER/$REPO_NAME"
 
 # one line trigger
-gh run list --workflow deploy.yml --branch main --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
+gh run list --repo "$GH_USER/$REPO_NAME" --workflow deploy.yml --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
 
 #   # Variables
 # ORG="arsalanshaikh13"

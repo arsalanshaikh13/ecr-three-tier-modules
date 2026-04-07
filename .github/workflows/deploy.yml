@@ -3,7 +3,6 @@ name: Build, Push, and Deploy to ECS
 on:
   push:
     branches:
-      - main
       - multi-env
       - multi-env-actions
     paths:
