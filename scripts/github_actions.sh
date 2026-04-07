@@ -33,7 +33,7 @@ REPO_NAME="ecr-three-tier-modules"
 # pwd
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
-git add .; git commit -m "added id on in wait-task fror probe job"
+git add .; git commit -m "updated the logic to get log group name and log stream name in deploy.yml file for probe job"
 git push  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
