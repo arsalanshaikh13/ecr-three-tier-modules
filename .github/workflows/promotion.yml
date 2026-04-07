@@ -1,0 +1,255 @@
+name: Promote Image To Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_environment:
+        description: "Lower environment whose successful manifests should be used as the promotion source"
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+      source_region:
+        description: "AWS region that holds the source ECR repositories"
+        type: choice
+        required: true
+        default: us-east-1
+        options:
+          - us-east-1
+      promote_frontend:
+        description: "Promote frontend image to the prod ECR repository?"
+        type: boolean
+        required: true
+        default: true
+      promote_backend:
+        description: "Promote backend image to the prod ECR repository?"
+        type: boolean
+        required: true
+        default: true
+      frontend_manifest_s3_key:
+        description: "Optional successful frontend manifest key in S3. Leave empty to use the latest successful manifest."
+        type: string
+        required: false
+      backend_manifest_s3_key:
+        description: "Optional successful backend manifest key in S3. Leave empty to use the latest successful manifest."
+        type: string
+        required: false
+      run_seeding_in_prod:
+        description: "Trigger prod seeding when dispatching deploy.yml"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write
+
+jobs:
+  promote-and-dispatch:
+    name: Promote Approved Images And Trigger Prod Deploy
+    runs-on: ubuntu-latest
+    # Put prod approval here so no image is copied to the prod region and no prod deploy
+    # is triggered until an operator explicitly approves the promotion workflow.
+    environment: prod
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate promotion inputs
+        shell: bash
+        run: |
+          if [[ "${{ inputs.promote_frontend }}" != "true" && "${{ inputs.promote_backend }}" != "true" ]]; then
+            echo "Error: at least one component must be selected for promotion."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to destination Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Promote approved images into prod ECR
+        id: promote-images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p promotion-manifests
+          SUMMARY_FILE="promotion-manifests/promotion-summary.md"
+          touch "$SUMMARY_FILE"
+
+          DESTINATION_REGION="${{ vars.AWS_REGION }}"
+          DESTINATION_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          SOURCE_REGION="${{ inputs.source_region }}"
+          BUCKET="${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}"
+          PROJECT="${{ vars.PROJECT_NAME }}"
+          SOURCE_ENV="${{ inputs.source_environment }}"
+
+          {
+            echo "## Promotion Summary"
+            echo "- Source environment: \`$SOURCE_ENV\`"
+            echo "- Source region: \`$SOURCE_REGION\`"
+            echo "- Target environment: \`prod\`"
+            echo "- Target region: \`$DESTINATION_REGION\`"
+            echo "- Workflow run: \`${{ github.run_id }}\`"
+            echo
+          } >> "$SUMMARY_FILE"
+
+          promote_component() {
+            local component="$1"
+            local manifest_input="$2"
+
+            local manifest_key="$manifest_input"
+            if [ -z "$manifest_key" ]; then
+              # Promotion defaults to the newest successful manifest because that manifest
+              # already passed the lower-environment probe and represents the latest approved candidate.
+              manifest_key=$(aws s3api list-objects-v2 \
+                --bucket "$BUCKET" \
+                --prefix "$PROJECT/deployments/$SOURCE_ENV/$component/successful/" \
+                --query 'reverse(sort_by(Contents,&LastModified))[0].Key' \
+                --output text)
+            fi
+
+            if [ -z "$manifest_key" ] || [ "$manifest_key" = "None" ]; then
+              echo "Error: no successful manifest found for $component in $SOURCE_ENV."
+              exit 1
+            fi
+
+            aws s3 cp "s3://$BUCKET/$manifest_key" "promotion-manifests/${component}-source-manifest.json" >/dev/null
+
+            local source_image_uri
+            source_image_uri=$(jq -r '.imageUri' "promotion-manifests/${component}-source-manifest.json")
+
+            if [ -z "$source_image_uri" ] || [ "$source_image_uri" = "null" ]; then
+              echo "Error: manifest $manifest_key does not contain imageUri."
+              exit 1
+            fi
+
+            # The manifest stores the exact image that passed lower-environment probing.
+            # We promote that same image into the prod-region ECR repo instead of rebuilding.
+            local source_repository_with_tag="${source_image_uri#*/}"
+            local source_repository="${source_repository_with_tag%:*}"
+            local source_tag="${source_repository_with_tag##*:}"
+            local destination_repository="${PROJECT}-${component}-repo-${{ vars.ENV_VAR }}"
+            local destination_image_uri="${DESTINATION_REGISTRY}/${destination_repository}:${source_tag}"
+
+            local image_manifest
+            image_manifest=$(aws ecr batch-get-image \
+              --region "$SOURCE_REGION" \
+              --repository-name "$source_repository" \
+              --image-ids imageTag="$source_tag" \
+              --query 'images[0].imageManifest' \
+              --output text)
+
+            if [ -z "$image_manifest" ] || [ "$image_manifest" = "None" ]; then
+              echo "Error: could not read image manifest for $source_image_uri from $SOURCE_REGION."
+              exit 1
+            fi
+
+            aws ecr put-image \
+              --region "$DESTINATION_REGION" \
+              --repository-name "$destination_repository" \
+              --image-tag "$source_tag" \
+              --image-manifest "$image_manifest" >/dev/null
+
+            # # Also refresh latest so the existing deploy.yml fetch-latest behavior continues
+            # # to resolve to the newly approved prod image without needing explicit image inputs.
+            # aws ecr put-image \
+            #   --region "$DESTINATION_REGION" \
+            #   --repository-name "$destination_repository" \
+            #   --image-tag latest \
+            #   --image-manifest "$image_manifest" >/dev/null
+
+            cat > "promotion-manifests/${component}-promotion.json" <<EOF
+            {
+              "project": "$PROJECT",
+              "sourceEnvironment": "$SOURCE_ENV",
+              "targetEnvironment": "prod",
+              "component": "$component",
+              "sourceManifestKey": "$manifest_key",
+              "sourceImageUri": "$source_image_uri",
+              "promotedImageUri": "$destination_image_uri",
+              "sourceRegion": "$SOURCE_REGION",
+              "targetRegion": "$DESTINATION_REGION",
+              "promotedBy": "${{ github.actor }}",
+              "promotedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            }
+            EOF
+
+            aws s3 cp \
+              "promotion-manifests/${component}-promotion.json" \
+              "s3://$BUCKET/$PROJECT/promotions/prod/$component/run-${{ github.run_id }}.json" >/dev/null
+
+            {
+              echo "### ${component} promoted to prod"
+              echo "- Source manifest: \`$manifest_key\`"
+              echo "- Source image: \`$source_image_uri\`"
+              echo "- Promoted image: \`$destination_image_uri\`"
+              echo
+            } >> "$SUMMARY_FILE"
+          }
+
+          if [ "${{ inputs.promote_frontend }}" = "true" ]; then
+            promote_component "frontend" "${{ inputs.frontend_manifest_s3_key }}"
+          fi
+
+          if [ "${{ inputs.promote_backend }}" = "true" ]; then
+            promote_component "backend" "${{ inputs.backend_manifest_s3_key }}"
+          fi
+
+          echo "summary_file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload promotion manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: promotion-manifests-prod-${{ github.run_id }}
+          path: promotion-manifests
+          if-no-files-found: error
+
+      - name: Trigger prod deployment workflow
+        id: trigger-deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Promotion stays focused on approving and moving the image artifact.
+          # The existing deploy.yml remains the single place that knows how to deploy,
+          # probe, and rollback the prod services.
+          gh workflow run deploy.yml \
+            --ref "${{ github.ref_name }}" \
+            -f action_type=deploy \
+            -f target_environment=prod \
+            -f build_frontend=false \
+            -f get_frontend=${{ inputs.promote_frontend }} \
+            -f build_backend=false \
+            -f get_backend=${{ inputs.promote_backend }} \
+            -f run_seeding=${{ inputs.run_seeding_in_prod }}
+
+          {
+            echo "triggered_ref=${{ github.ref_name }}"
+            echo "run_seeding=${{ inputs.run_seeding_in_prod }}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish promotion summary to job summary
+        shell: bash
+        run: |
+          cat "${{ steps.promote-images.outputs.summary_file }}" >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "## Triggered Prod Deploy"
+            echo "- Workflow: \`deploy.yml\`"
+            echo "- Ref: \`${{ steps.trigger-deploy.outputs.triggered_ref }}\`"
+            echo "- get_frontend: \`${{ inputs.promote_frontend }}\`"
+            echo "- get_backend: \`${{ inputs.promote_backend }}\`"
+            echo "- run_seeding: \`${{ steps.trigger-deploy.outputs.run_seeding }}\`"
+            echo
+            echo "This promotion workflow copies the approved image into the prod-region ECR repository first."
+            echo "The triggered deploy workflow then reuses its existing fetch-from-ECR path, which keeps deployment logic centralized in one place."
+          } >> "$GITHUB_STEP_SUMMARY"
