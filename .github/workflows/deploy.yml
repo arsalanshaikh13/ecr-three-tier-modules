@@ -220,7 +220,7 @@ jobs:
         id: determine-image
         # if (inputs.get_frontend == true || inputs.get_backend == true) || github.event_name == 'push'
         if: |
-          (github.event_name == 'workflow_dispatch' && (inputs.build_frontend == true || inputs.build_backend == true)) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.get_frontend == true || inputs.get_backend == true)) ||
           github.event_name == 'push'
 
         uses: ./.github/actions/ecr-fetch-image
