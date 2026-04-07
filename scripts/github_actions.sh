@@ -23,15 +23,16 @@ REPO_NAME="ecr-three-tier-modules"
 # gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME" --env dev
 # gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME" --env dev
 # gh variable set AWS_REGION --body "us-east-1" --repo "$GH_USER/$REPO_NAME" --env dev
+# gh variable set DEPLOYMENT_MANIFEST_BUCKET --body "lirw-ecs-deployment-manifests-dev" --repo "$GH_USER/$REPO_NAME" --env dev
 # gh variable set ENV_VAR --body "prod" --repo "$GH_USER/$REPO_NAME" --env prod
 # gh variable set ACCOUNT_ID --body "750702272407" --repo "$GH_USER/$REPO_NAME" --env prod
 # gh variable set PROJECT_NAME --body "lirw-ecs" --repo "$GH_USER/$REPO_NAME" --env prod
 # gh variable set AWS_REGION --body "us-east-2" --repo "$GH_USER/$REPO_NAME" --env prod
+# gh variable set DEPLOYMENT_MANIFEST_BUCKET --body "lirw-ecs-deployment-manifests-prod" --repo "$GH_USER/$REPO_NAME" --env prod
 
 
-git add .; git commit -m "updated if condition in build and deploy job"; 
+git add .; git commit -m "updated actions : ecs-run-task-awsvpc issue with escaped quotes"
 git push ;
-# git push -u origin multi-env-actions;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 

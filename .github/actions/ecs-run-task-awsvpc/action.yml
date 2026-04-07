@@ -43,7 +43,7 @@ runs:
           --cluster "${{ inputs.cluster }}" \
           --task-definition "${{ inputs.task_definition }}" \
           --launch-type "${{ inputs.launch_type }}" \
-          --network-configuration "{\"awsvpcConfiguration\":{\"subnets\":${{ inputs.subnet_ids_json }},\"securityGroups\":[\"${{ inputs.security_group_id }}\"],\"assignPublicIp\":\"${{ inputs.assign_public_ip }}\"}}" \
+          --network-configuration '{"awsvpcConfiguration":{"subnets":${{ inputs.subnet_ids_json }},"securityGroups":["${{ inputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
           --query "tasks[0].taskArn" \
           --output text)
 
