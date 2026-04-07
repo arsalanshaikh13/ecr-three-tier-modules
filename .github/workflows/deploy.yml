@@ -558,58 +558,12 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------
-  # 4. FINALIZE DEPLOY (Wait for ECS stability only after probe success)
-  # ---------------------------------------------------------
-  finalize-deploy:
-    name: Finalize Deploy ${{ matrix.component }} (${{ matrix.environment }})
-    needs: [detect-changes, build-and-deploy, probe-app]
-    if: ${{ success() && needs.detect-changes.outputs.matrix != '[]' }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    environment: ${{ matrix.environment }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Download deployment metadata artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}
-          path: deploy-metadata
-
-      - name: Read deployment metadata
-        id: metadata
-        shell: bash
-        run: |
-          METADATA_FILE="deploy-metadata/deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json"
-
-          # Finalize reads the same metadata as rollback so service identity stays consistent across jobs.
-          echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
-          echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for ECS service stability
-        uses: ./.github/actions/ecs-wait-service-stable
-        with:
-          cluster: ${{ steps.metadata.outputs.cluster }}
-          service: ${{ steps.metadata.outputs.service }}
-
-  # ---------------------------------------------------------
   # 5. ROLLBACK (Use SSM last-known-good pointer when probe/finalize fails)
   # ---------------------------------------------------------
   rollback:
     name: Roll Back ${{ matrix.component }} (${{ matrix.environment }})
-    needs: [detect-changes, build-and-deploy, probe-app, finalize-deploy]
-    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && (needs.probe-app.result == 'failure' || needs.finalize-deploy.result == 'failure') }}
+    needs: [detect-changes, build-and-deploy, probe-app]
+    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && needs.probe-app.result == 'failure'  }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -668,11 +622,11 @@ jobs:
           service: ${{ steps.rollback-metadata.outputs.service }}
           task_definition: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
 
-      - name: Wait for rollback stability
-        uses: ./.github/actions/ecs-wait-service-stable
-        with:
-          cluster: ${{ steps.rollback-metadata.outputs.cluster }}
-          service: ${{ steps.rollback-metadata.outputs.service }}
+      # - name: Wait for rollback stability
+      #   uses: ./.github/actions/ecs-wait-service-stable
+      #   with:
+      #     cluster: ${{ steps.rollback-metadata.outputs.cluster }}
+      #     service: ${{ steps.rollback-metadata.outputs.service }}
 
       - name: Reset deployment pointers after rollback
         uses: ./.github/actions/deployment-pointer-write
@@ -826,11 +780,11 @@ jobs:
           service: ${{ inputs.rollback_component }}-service
           task_definition: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
 
-      - name: Wait for rollback stability
-        uses: ./.github/actions/ecs-wait-service-stable
-        with:
-          cluster: ${{ env.ECS_CLUSTER }}
-          service: ${{ inputs.rollback_component }}-service
+      # - name: Wait for rollback stability
+      #   uses: ./.github/actions/ecs-wait-service-stable
+      #   with:
+      #     cluster: ${{ env.ECS_CLUSTER }}
+      #     service: ${{ inputs.rollback_component }}-service
 
       - name: Reset deployment pointers after manual rollback
         uses: ./.github/actions/deployment-pointer-write
