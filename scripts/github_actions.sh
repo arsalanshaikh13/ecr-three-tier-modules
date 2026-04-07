@@ -45,7 +45,7 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # Fail immediately if GitHub cannot dispatch the workflow. If this returns HTTP 422
 # while the branch file has workflow_dispatch, the default/main branch likely still
 # has an older workflow definition registered by GitHub.
-if ! gh workflow run deploy.yml \
+if ! gh workflow run promotion.yml \
   --ref multi-env-actions \
   -f action_type=deploy \
   -f target_environment=dev \
@@ -65,7 +65,7 @@ sleep 3
 # Fetch both internal run ID and human-readable run number for the latest dispatch after START_TS.
 RUN_ID=$(gh run list \
   --repo "$GH_USER/$REPO_NAME" \
-  --workflow deploy.yml \
+  --workflow promotion.yml \
   --branch multi-env-actions \
   --event workflow_dispatch \
   --limit 20 \
@@ -74,7 +74,7 @@ RUN_ID=$(gh run list \
 
 RUN_NO=$(gh run list \
   --repo "$GH_USER/$REPO_NAME" \
-  --workflow deploy.yml \
+  --workflow promotion.yml \
   --branch multi-env-actions \
   --event workflow_dispatch \
   --limit 20 \
@@ -90,7 +90,7 @@ fi
 gh run view "$RUN_ID" --repo "$GH_USER/$REPO_NAME"
 
 # one line trigger
-gh run list --repo "$GH_USER/$REPO_NAME" --workflow deploy.yml --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
+gh run list --repo "$GH_USER/$REPO_NAME" --workflow promotion.yml --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
 
 #   # Variables
 # ORG="arsalanshaikh13"
