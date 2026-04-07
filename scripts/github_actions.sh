@@ -34,7 +34,7 @@ REPO_NAME="ecr-three-tier-modules"
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 git add .; git commit -m "using additional tags again"
-git push ;
+git push --force ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 
