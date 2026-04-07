@@ -167,7 +167,7 @@ jobs:
             #   --image-tag latest \
             #   --image-manifest "$image_manifest" >/dev/null
 
-            cat > "promotion-manifests/${component}-promotion.json" <<-EOF
+            cat > "promotion-manifests/${component}-promotion.json" << EOF
             {
               "project": "$PROJECT",
               "sourceEnvironment": "$SOURCE_ENV",
