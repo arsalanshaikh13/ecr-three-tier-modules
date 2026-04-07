@@ -385,10 +385,23 @@ jobs:
 
       - name: Wait for probe task to stop
         run: |
-          # The reusable run-task action returns the ARN; we wait here so later steps can inspect exit code and reasons.
+          LOG_STREAM_NAME=$(aws ecs describe-tasks \
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --tasks "${{ steps.run-probe.outputs.task_arn }}" \
+              --query "tasks[0].containers[0].logStreamName" \
+              --output text)
+
+          LOG_GROUP_NAME=$(aws ecs describe-task-definition \
+            --task-definition "${{ steps.register-probe-task-def.outputs.task_def_arn }}" \
+            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
+            --output text)
+
+          echo "LOG_STREAM_NAME=$LOG_STREAM_NAME" >> $GITHUB_OUTPUT
+          echo "LOG_GROUP_NAME=$LOG_GROUP_NAME" >> $GITHUB_OUTPUT
+
           aws ecs wait tasks-stopped \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --tasks "${{ steps.run-probe.outputs.task_arn }}"
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --tasks "${{ steps.run-probe.outputs.task_arn }}"
 
       - name: Check probe task result
         id: probe-result
@@ -411,16 +424,6 @@ jobs:
             --query "tasks[0].containers[0].reason" \
             --output text)
 
-          LOG_STREAM_NAME=$(aws ecs describe-tasks \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
-            --query "tasks[0].containers[0].logStreamName" \
-            --output text)
-
-          LOG_GROUP_NAME=$(aws ecs describe-task-definition \
-            --task-definition "${{ steps.register-probe-task-def.outputs.task_def_arn }}" \
-            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
-            --output text)
 
           LOG_FILE="probe-logs-${{ matrix.environment }}.txt"
 
@@ -430,13 +433,13 @@ jobs:
 
           # Pull probe logs back into CI so failures such as HTTP 503 are visible immediately
           # without requiring a separate trip to CloudWatch for first-pass diagnosis.
-          if [ -n "$LOG_GROUP_NAME" ] && [ "$LOG_GROUP_NAME" != "None" ] && [ -n "$LOG_STREAM_NAME" ] && [ "$LOG_STREAM_NAME" != "None" ]; then
+          if [ -n "${{ steps.wait-probe.outputs.LOG_GROUP_NAME }}" ] && [ "${{ steps.wait-probe.outputs.LOG_GROUP_NAME }}" != "None" ] && [ -n "${{ steps.wait-probe.outputs.LOG_STREAM_NAME }}" ] && [ "${{ steps.wait-probe.outputs.LOG_STREAM_NAME }}" != "None" ]; then
             echo "Probe CloudWatch log group: $LOG_GROUP_NAME"
             echo "Probe CloudWatch log stream: $LOG_STREAM_NAME"
             echo "----- Begin Probe Logs -----"
             aws logs get-log-events \
-              --log-group-name "$LOG_GROUP_NAME" \
-              --log-stream-name "$LOG_STREAM_NAME" \
+              --log-group-name "${{ steps.wait-probe.outputs.LOG_GROUP_NAME }}" \
+              --log-stream-name "${{ steps.wait-probe.outputs.LOG_STREAM_NAME }}" \
               --query 'events[*].message' \
               --output text | tee "$LOG_FILE" || true
             echo "----- End Probe Logs -----"
