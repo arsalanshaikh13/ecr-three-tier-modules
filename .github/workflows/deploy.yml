@@ -202,7 +202,11 @@ jobs:
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         # CRITICAL: If the array is empty, skip this job entirely to prevent matrix errors
-        if: (inputs.build_frontend == true || inputs.build_backend == true) || github.event_name == 'push'
+        # if (inputs.build_frontend == true || inputs.build_backend == true) || github.event_name == 'push'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.build_frontend == true || inputs.build_backend == true)) ||
+          github.event_name == 'push'
+
         uses: ./.github/actions/ecs-build-push-image
         with:
           workdir: lirw-three-tier/${{ matrix.component }}
@@ -214,7 +218,11 @@ jobs:
       # Reuse the shared ECR lookup action so manual redeploys can pull the latest existing image.
       - name: Determine Image URI (Fetch from ECR)
         id: determine-image
-        if: (inputs.get_frontend == true || inputs.get_backend == true) || github.event_name == 'push'
+        # if (inputs.get_frontend == true || inputs.get_backend == true) || github.event_name == 'push'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.build_frontend == true || inputs.build_backend == true)) ||
+          github.event_name == 'push'
+
         uses: ./.github/actions/ecr-fetch-image
         with:
           ecr_registry: ${{ steps.login-ecr.outputs.registry }}
@@ -973,9 +981,9 @@ jobs:
             --output text)
             
           if [ "$EXIT_CODE" = "0" ]; then
-            echo "âœ… Database seeding completed successfully!"
+            echo "Database seeding completed successfully."
           else
-            echo "âŒ Database seeding FAILED with exit code: $EXIT_CODE"
+            echo "Database seeding FAILED with exit code: $EXIT_CODE"
             echo "Check ECS CloudWatch logs for the exact SQL error."
             exit 1 # This forces the GitHub Actions workflow to fail
           fi

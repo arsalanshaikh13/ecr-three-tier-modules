@@ -29,7 +29,8 @@ REPO_NAME="ecr-three-tier-modules"
 # gh variable set AWS_REGION --body "us-east-2" --repo "$GH_USER/$REPO_NAME" --env prod
 
 
-# git add .; git commit -m "full rollback, entering and capturing manifests files creating appropriate actions files for them, promotion.yml file completely created"; 
+git add .; git commit -m "updated if condition in build and deploy job"; 
+git push ;
 # git push -u origin multi-env-actions;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -43,8 +44,7 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # Fail immediately if GitHub cannot dispatch the workflow. If this returns HTTP 422
 # while the branch file has workflow_dispatch, the default/main branch likely still
 # has an older workflow definition registered by GitHub.
-if ! gh workflow run ./github/workflows/deploy.yml \
-  --repo "$GH_USER/$REPO_NAME" \
+if ! gh workflow run deploy.yml \
   --ref multi-env-actions \
   -f action_type=deploy \
   -f target_environment=dev \
