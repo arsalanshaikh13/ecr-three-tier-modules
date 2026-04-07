@@ -98,7 +98,6 @@ jobs:
           echo "BUCKET: $BUCKET"
           echo "PROJECT: $PROJECT"
           echo "SOURCE_ENV: $SOURCE_ENV"
-          echo "component: $component"
 
           {
             echo "## Promotion Summary"
