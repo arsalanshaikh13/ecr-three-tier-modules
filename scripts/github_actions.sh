@@ -49,12 +49,12 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # has an older workflow definition registered by GitHub.
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
-  -f action_type=deploy \
+  -f action_type=rollback \
   -f target_environment=dev \
   -f build_frontend=false \
-  -f get_frontend=true \
+  -f get_frontend=false \
   -f build_backend=false \
-  -f get_backend=true \
+  -f get_backend=false \
   -f run_seeding=false; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."

@@ -47,6 +47,35 @@ for SERVICE_NAME in "${SERVICES[@]}"; do
   fi
 done
 
+echo "Force-stopping running ECS tasks after desired count is set to 0..."
+
+for SERVICE_NAME in "${SERVICES[@]}"; do
+  TASK_ARNS=$(aws ecs list-tasks \
+    --cluster "$CLUSTER_NAME" \
+    --service-name "$SERVICE_NAME" \
+    --desired-status RUNNING \
+    --region "$REGION" \
+    --query 'taskArns[]' \
+    --output text)
+
+  if [ $? -ne 0 ]; then
+  echo "   ❌ Failed to update $SERVICE_NAME. Please check your AWS credentials and cluster name."
+  exit 1
+  fi
+
+
+  if [ -n "$TASK_ARNS" ] && [ "$TASK_ARNS" != "None" ]; then
+    for TASK_ARN in $TASK_ARNS; do
+      echo "Stopping task: $TASK_ARN"
+      aws ecs stop-task \
+        --cluster "$CLUSTER_NAME" \
+        --task "$TASK_ARN" \
+        --reason "Pre-terraform teardown cleanup" \
+        --region "$REGION" >/dev/null
+    done
+  fi
+done
+
 # Step 2: Actively monitor the shutdown process
 echo "2️⃣ Waiting for all running tasks to terminate cleanly..."
 while true; do
