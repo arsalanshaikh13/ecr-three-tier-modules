@@ -97,11 +97,20 @@ module "secrets" {
 
 module "ssm" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ssm"
-  version = "0.0.1"
+  version = "0.0.15-s3-ssm-deploy"
+  # version = "0.0.1"
   common_tags    = local.common_tags
   db_dns_address = module.rds.db_dns_address
   env_suffix     = local.env_suffix
   project_name   = var.project_name
+}
+
+module "s3" {
+  source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//s3"
+  version = "0.0.15-s3-ssm-deploy"
+  common_tags  = local.common_tags
+  env_suffix   = local.env_suffix
+  project_name = var.project_name
 }
 
 

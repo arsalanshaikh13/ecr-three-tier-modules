@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - multi-env
+      - multi-env-actions
     paths:
       - "lirw-three-tier/frontend/**"
       - "lirw-three-tier/backend/**"
@@ -74,7 +75,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  issues: write
 
 jobs:
   # ---------------------------------------------------------
@@ -503,36 +503,29 @@ jobs:
           path: manifests/success
           if-no-files-found: error
 
-      - name: Comment success summary on associated pull request
+      - name: Publish deployment summary to job summary
         if: ${{ success() }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('${{ steps.success-manifests.outputs.summary_file }}', 'utf8');
+        shell: bash
+        run: |
+          # Job summaries are a lighter-weight place to iterate on deployment reporting:
+          # they stay attached to the workflow run without adding PR noise while the
+          # rollout, probe, and rollback flow is still being refined.
+          cat "${{ steps.success-manifests.outputs.summary_file }}" >> "$GITHUB_STEP_SUMMARY"
 
-            let prNumber = context.payload.pull_request?.number;
-
-            if (!prNumber) {
-              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: context.sha,
-              });
-              prNumber = associated.data[0]?.number;
-            }
-
-            if (!prNumber) {
-              core.info('No associated pull request found for deployment summary comment.');
-              return;
-            }
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body,
-            });
+          {
+            echo "## Deployment Context"
+            echo "- Workflow: \`${{ github.workflow }}\`"
+            echo "- Run ID: \`${{ github.run_id }}\`"
+            echo "- Actor: \`${{ github.actor }}\`"
+            echo "- Commit SHA: \`${{ github.sha }}\`"
+            echo "- Environment: \`${{ matrix.environment }}\`"
+            echo "- Probe reason: ${{ steps.probe-result.outputs.probe_reason }}"
+            echo "- Manifest artifact: \`successful-deployment-manifests-${{ matrix.environment }}\`"
+            echo "- Manifest bucket: \`${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}\`"
+            echo
+            echo "### Probe Log Artifact"
+            echo "- Probe log file: \`${{ steps.probe-result.outputs.log_file }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Persist failed deployment manifests
         if: ${{ failure() }}

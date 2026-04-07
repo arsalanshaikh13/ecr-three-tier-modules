@@ -29,8 +29,8 @@ REPO_NAME="ecr-three-tier-modules"
 # gh variable set AWS_REGION --body "us-east-2" --repo "$GH_USER/$REPO_NAME" --env prod
 
 
-git add .; git commit -m "updated deploy.yml"; 
-git push -u origin multi-env;
+git add .; git commit -m "full rollback, entering and capturing manifests files creating appropriate actions files for them, promotion.yml file completely created"; 
+git push -u origin multi-env-actions;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 
@@ -41,13 +41,14 @@ git push -u origin multi-env;
 # START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 gh workflow run deploy.yml \
-  --ref multi-env \
+  --ref multi-env-actions \
+  -f action_type=deploy \
   -f target_environment=all \
-  -f build_frontend=false \
-  -f get_frontend=true \
-  -f build_backend=false \
-  -f get_backend=true \
-  -f run_seeding=false
+  -f build_frontend=true \
+  -f get_frontend=false \
+  -f build_backend=true \
+  -f get_backend=false \
+  -f run_seeding=true
 
 # Small delay to allow GitHub to register the new run in run list.
 sleep 3
