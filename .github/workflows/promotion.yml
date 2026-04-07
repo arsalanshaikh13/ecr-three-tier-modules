@@ -167,7 +167,7 @@ jobs:
             #   --image-tag latest \
             #   --image-manifest "$image_manifest" >/dev/null
 
-            cat > "promotion-manifests/${component}-promotion.json" <<EOF
+            cat > "promotion-manifests/${component}-promotion.json" <<-EOF
             {
               "project": "$PROJECT",
               "sourceEnvironment": "$SOURCE_ENV",
@@ -181,7 +181,7 @@ jobs:
               "promotedBy": "${{ github.actor }}",
               "promotedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
             }
-EOF
+            EOF
 
             aws s3 cp \
               "promotion-manifests/${component}-promotion.json" \
