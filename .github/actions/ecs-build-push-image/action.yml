@@ -21,7 +21,7 @@ inputs:
   dockerfile:
     description: Optional Dockerfile path relative to workdir.
     required: false
-    default: ''
+    default: ""
 
 outputs:
   image:
@@ -57,9 +57,9 @@ runs:
 
         docker push "$IMAGE_URI"
 
-        # Push the extra tag as well so environments can still opt into a stable moving tag.
-        if [ -n "${{ inputs.additional_tag }}" ]; then
-          docker push "$EXTRA_IMAGE_URI"
-        fi
+        # no need to Push the extra tag as well so environments can still opt into a stable moving tag.
+        # if [ -n "${{ inputs.additional_tag }}" ]; then
+        #   docker push "$EXTRA_IMAGE_URI"
+        # fi
 
         echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"

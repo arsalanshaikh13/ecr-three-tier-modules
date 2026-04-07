@@ -33,8 +33,8 @@ REPO_NAME="ecr-three-tier-modules"
 # pwd
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
-git add .; git commit -m "using additional tags again"
-git push --force ;
+git add .; git commit -m "comment out the push latest image to ecr as we are only track images through git sha not latest tag"
+git push  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 
