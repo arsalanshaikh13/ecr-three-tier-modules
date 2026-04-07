@@ -92,6 +92,13 @@ jobs:
           PROJECT="${{ vars.PROJECT_NAME }}"
           SOURCE_ENV="${{ inputs.source_environment }}"
 
+          echo "DESTINATION_REGION: $DESTINATION_REGION"
+          echo "DESTINATION_REGISTRY: $DESTINATION_REGISTRY"
+          echo "SOURCE_REGION: $SOURCE_REGION"
+          echo "BUCKET: $BUCKET"
+          echo "PROJECT: $PROJECT"
+          echo "SOURCE_ENV: $SOURCE_ENV"
+
           {
             echo "## Promotion Summary"
             echo "- Source environment: \`$SOURCE_ENV\`"
@@ -111,10 +118,10 @@ jobs:
               # Promotion defaults to the newest successful manifest because that manifest
               # already passed the lower-environment probe and represents the latest approved candidate.
               manifest_key=$(aws s3api list-objects-v2 \
-                --bucket "$BUCKET" \
-                --prefix "$PROJECT/deployments/$SOURCE_ENV/$component/successful/" \
-                --query 'reverse(sort_by(Contents,&LastModified))[0].Key' \
-                --output text)
+                            --bucket "$BUCKET" \
+                            --prefix "$PROJECT/deployments/$SOURCE_ENV/$component/successful/" \
+                            --query 'reverse(sort_by(Contents || `[]`, &LastModified))[0].Key' \
+                            --output text)
             fi
 
             if [ -z "$manifest_key" ] || [ "$manifest_key" = "None" ]; then
@@ -190,7 +197,7 @@ jobs:
               promotedBy:        $promotedBy,
               promotedAt:        $promotedAt
             }' > "promotion-manifests/${component}-promotion.json"
-            
+
             aws s3 cp \
               "promotion-manifests/${component}-promotion.json" \
               "s3://$BUCKET/$PROJECT/promotions/prod/$component/run-${{ github.run_id }}.json" >/dev/null
