@@ -88,7 +88,9 @@ jobs:
           DESTINATION_REGION="${{ vars.AWS_REGION }}"
           DESTINATION_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           SOURCE_REGION="${{ inputs.source_region }}"
-          BUCKET="${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}"
+          # BUCKET="${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}"
+          # resolves to: lirw-ecs-deployment-manifests-dev
+          BUCKET="${{ vars.DEPLOYMENT_MANIFEST_BUCKET_PREFIX }}-${SOURCE_ENV}"
           PROJECT="${{ vars.PROJECT_NAME }}"
           SOURCE_ENV="${{ inputs.source_environment }}"
 
