@@ -167,22 +167,30 @@ jobs:
             #   --image-tag latest \
             #   --image-manifest "$image_manifest" >/dev/null
 
-            cat > "promotion-manifests/${component}-promotion.json" << EOF
-            {
-              "project": "$PROJECT",
-              "sourceEnvironment": "$SOURCE_ENV",
-              "targetEnvironment": "prod",
-              "component": "$component",
-              "sourceManifestKey": "$manifest_key",
-              "sourceImageUri": "$source_image_uri",
-              "promotedImageUri": "$destination_image_uri",
-              "sourceRegion": "$SOURCE_REGION",
-              "targetRegion": "$DESTINATION_REGION",
-              "promotedBy": "${{ github.actor }}",
-              "promotedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-            }
-            EOF
-
+          jq -n \
+            --arg project        "$PROJECT" \
+            --arg sourceEnv      "$SOURCE_ENV" \
+            --arg sourceManifest "$manifest_key" \
+            --arg sourceImage    "$source_image_uri" \
+            --arg promotedImage  "$destination_image_uri" \
+            --arg sourceRegion   "$SOURCE_REGION" \
+            --arg targetRegion   "$DESTINATION_REGION" \
+            --arg promotedBy     "arsalanshaikh13" \
+            --arg promotedAt     "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{
+              project:           $project,
+              sourceEnvironment: $sourceEnv,
+              targetEnvironment: "prod",
+              component:         "'"$component"'",
+              sourceManifestKey: $sourceManifest,
+              sourceImageUri:    $sourceImage,
+              promotedImageUri:  $promotedImage,
+              sourceRegion:      $sourceRegion,
+              targetRegion:      $targetRegion,
+              promotedBy:        $promotedBy,
+              promotedAt:        $promotedAt
+            }' > "promotion-manifests/${component}-promotion.json"
+            
             aws s3 cp \
               "promotion-manifests/${component}-promotion.json" \
               "s3://$BUCKET/$PROJECT/promotions/prod/$component/run-${{ github.run_id }}.json" >/dev/null

@@ -33,7 +33,7 @@ REPO_NAME="ecr-three-tier-modules"
 # pwd
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/promotion.yml"
-git add .; git commit -m "updated promotion.yml used << EOF to resolve indentiaiton issues"
+git add .; git commit -m "replace cat << EOF with jq for pomotion.json file to resolve indentiaiton issues"
 git push ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
