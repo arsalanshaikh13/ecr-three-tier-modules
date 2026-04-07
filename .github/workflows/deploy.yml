@@ -384,6 +384,7 @@ jobs:
           assign_public_ip: DISABLED
 
       - name: Wait for probe task to stop
+        id: wait-probe
         run: |
           LOG_STREAM_NAME=$(aws ecs describe-tasks \
               --cluster "${{ env.ECS_CLUSTER }}" \
