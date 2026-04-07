@@ -163,11 +163,11 @@ jobs:
               exit 1
             fi
 
-            aws ecr put-image \
-              --region "$DESTINATION_REGION" \
-              --repository-name "$destination_repository" \
-              --image-tag "$source_tag" \
-              --image-manifest "$image_manifest" >/dev/null
+            # aws ecr put-image \
+            #   --region "$DESTINATION_REGION" \
+            #   --repository-name "$destination_repository" \
+            #   --image-tag "$source_tag" \
+            #   --image-manifest "$image_manifest" >/dev/null
 
             # # Also refresh latest so the existing deploy.yml fetch-latest behavior continues
             # # to resolve to the newly approved prod image without needing explicit image inputs.
@@ -176,6 +176,28 @@ jobs:
             #   --repository-name "$destination_repository" \
             #   --image-tag latest \
             #   --image-manifest "$image_manifest" >/dev/null
+
+
+            # Login to SOURCE region ECR
+            aws ecr get-login-password --region "$SOURCE_REGION" \
+              | docker login --username AWS --password-stdin \
+                "$(echo "$source_image_uri" | cut -d'/' -f1)"
+
+            # Login to DESTINATION region ECR
+            aws ecr get-login-password --region "$DESTINATION_REGION" \
+              | docker login --username AWS --password-stdin "$DESTINATION_REGISTRY"
+
+            # Pull from source
+            docker pull "$source_image_uri"
+
+            # Tag for destination
+            docker tag "$source_image_uri" "$destination_image_uri"
+
+            # Push to destination
+            docker push "$destination_image_uri"
+
+            # Cleanup local image to save runner disk space
+            docker rmi "$source_image_uri" "$destination_image_uri" || true
 
           jq -n \
             --arg project        "$PROJECT" \
