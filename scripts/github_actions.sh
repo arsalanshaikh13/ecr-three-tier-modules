@@ -33,8 +33,8 @@ REPO_NAME="ecr-three-tier-modules"
 # pwd
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/promotion.yml"
-# git add .; git commit -m "updated actions : ecs-run-task-awsvpc issue with escaped quotes"
-# git push ;
+git add .; git commit -m "updated promotion.yml put EOF towards left edge for avoiding indentiaiton issues"
+git push ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 
@@ -61,6 +61,23 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 #   exit 1
 # fi
 
+# curl -X POST \
+#   -H "Authorization: token $(gh auth token)" \
+#   -H "Accept: application/vnd.github.v3+json" \
+#   https://api.github.com/repos//$GH_USER/$REPO_NAME/actions/workflows/deploy.yml/dispatches \
+#   -d '{
+#     "ref": "multi-env-actions",
+#     "inputs": {
+#       "action_type": "deploy",
+#       "target_environment": "dev",
+#       "build_frontend": "true",
+#       "get_frontend": "false",
+#       "build_backend": "true",
+#       "get_backend": "false",
+#       "run_seeding": "true"
+#     }
+#   }'
+
 
 curl -X POST \
   -H "Authorization: token $(gh auth token)" \
@@ -69,46 +86,44 @@ curl -X POST \
   -d '{
     "ref": "multi-env-actions",
     "inputs": {
-      "action_type": "deploy",
-      "target_environment": "dev",
-      "build_frontend": "true",
-      "get_frontend": "false",
-      "build_backend": "true",
-      "get_backend": "false",
-      "run_seeding": "true"
+      "source_environment": "dev",
+      "promote_frontend": "true",
+      "promote_backend": "true",
+      "run_seeding_in_prod": "true"
     }
   }'
-# Small delay to allow GitHub to register the new run in run list.
-sleep 3
+# # Small delay to allow GitHub to register the new run in run list.
+# sleep 3
 
-# Fetch both internal run ID and human-readable run number for the latest dispatch after START_TS.
-RUN_ID=$(gh run list \
-  --repo "$GH_USER/$REPO_NAME" \
-  --workflow "promotion.yml" \
-  --branch multi-env-actions \
-  --event workflow_dispatch \
-  --limit 20 \
-  --json databaseId,number,createdAt \
-  --jq "map(select(.createdAt >= \"$START_TS\")) | first | .databaseId")
+# # Fetch both internal run ID and human-readable run number for the latest dispatch after START_TS.
+# RUN_ID=$(gh run list \
+#   --repo "$GH_USER/$REPO_NAME" \
+#   --workflow "promotion.yml" \
+#   --branch multi-env-actions \
+#   --event workflow_dispatch \
+#   --limit 20 \
+#   --json databaseId,number,createdAt \
+#   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .databaseId")
 
-RUN_NO=$(gh run list \
-  --repo "$GH_USER/$REPO_NAME" \
-  --workflow "promotion.yml" \
-  --branch multi-env-actions \
-  --event workflow_dispatch \
-  --limit 20 \
-  --json number,createdAt \
-  --jq "map(select(.createdAt >= \"$START_TS\")) | first | .number")
+# RUN_NO=$(gh run list \
+#   --repo "$GH_USER/$REPO_NAME" \
+#   --workflow "promotion.yml" \
+#   --branch multi-env-actions \
+#   --event workflow_dispatch \
+#   --limit 20 \
+#   --json number,createdAt \
+#   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .number")
 
-echo "Triggered deploy workflow: RUN_ID=$RUN_ID RUN_NO=$RUN_NO"
-if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-  echo "Failed to resolve the dispatched run id."
-  exit 1
-fi
+# echo "Triggered deploy workflow: RUN_ID=$RUN_ID RUN_NO=$RUN_NO"
+# if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+#   echo "Failed to resolve the dispatched run id."
+#   exit 1
+# fi
 
-gh run view "$RUN_ID" --repo "$GH_USER/$REPO_NAME"
+# gh run view "$RUN_ID" --repo "$GH_USER/$REPO_NAME"
 
-# one line trigger
+# # one line trigger
+# gh run list --repo "$GH_USER/$REPO_NAME" --workflow "promotion.yml" --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
 gh run list --repo "$GH_USER/$REPO_NAME" --workflow "promotion.yml" --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
 
 #   # Variables

@@ -181,7 +181,7 @@ jobs:
               "promotedBy": "${{ github.actor }}",
               "promotedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
             }
-            EOF
+EOF
 
             aws s3 cp \
               "promotion-manifests/${component}-promotion.json" \
