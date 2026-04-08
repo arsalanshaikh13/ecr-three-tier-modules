@@ -144,8 +144,44 @@ jobs:
           path: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json
           if-no-files-found: error
 
+      - name: Resolve service execution network defaults
+        id: service-execution
+        shell: bash
+        run: |
+          # Temporary fallback: when awsvpc service network inputs are omitted, keep deploy
+          # runnable by deriving environment-specific defaults instead of failing immediately.
+          NETWORK_MODE="${{ inputs.service_network_mode }}"
+          SECURITY_GROUP_NAME="${{ inputs.security_group_name }}"
+          SUBNET_TAG_VALUES="${{ inputs.subnet_tag_values }}"
+          ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
+
+          if [ -z "$NETWORK_MODE" ]; then
+            NETWORK_MODE="${{ vars.SERVICE_NETWORK_MODE || 'non-awsvpc' }}"
+          fi
+
+          if [ -z "$SECURITY_GROUP_NAME" ]; then
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}"
+            else
+              SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-backend-sg-{0}', vars.ENV_VAR) }}"
+            fi
+          fi
+
+          if [ -z "$SUBNET_TAG_VALUES" ]; then
+            SUBNET_TAG_VALUES="${{ vars.SERVICE_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}"
+          fi
+
+          if [ -z "$ASSIGN_PUBLIC_IP" ]; then
+            ASSIGN_PUBLIC_IP="${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+          fi
+
+          echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
+          echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
+          echo "subnet_tag_values=$SUBNET_TAG_VALUES" >> "$GITHUB_OUTPUT"
+          echo "assign_public_ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
+
       - name: Update ECS service to new task definition (non-awsvpc)
-        if: ${{ inputs.service_network_mode != 'awsvpc' }}
+        if: ${{ steps.service-execution.outputs.network_mode != 'awsvpc' }}
         uses: ./.github/actions/ecs-run-task
         with:
           run_mode: service
@@ -157,7 +193,7 @@ jobs:
           force_new_deployment: true
 
       - name: Update ECS service to new task definition (awsvpc)
-        if: ${{ inputs.service_network_mode == 'awsvpc' }}
+        if: ${{ steps.service-execution.outputs.network_mode == 'awsvpc' }}
         uses: ./.github/actions/ecs-run-task-awsvpc
         with:
           run_mode: service
@@ -167,7 +203,8 @@ jobs:
           # The reusable workflow stays generic here: the caller decides whether a target
           # environment uses awsvpc and passes the environment-specific lookup values in.
           # The awsvpc runner action then resolves the actual IDs and updates the service.
-          security_group_name: ${{ inputs.security_group_name }}
-          subnet_tag_values: ${{ inputs.subnet_tag_values }}
-          assign_public_ip: ${{ inputs.assign_public_ip }}
+          # When those inputs are empty, use temporary environment-aligned defaults for testing.
+          security_group_name: ${{ steps.service-execution.outputs.security_group_name }}
+          subnet_tag_values: ${{ steps.service-execution.outputs.subnet_tag_values }}
+          assign_public_ip: ${{ steps.service-execution.outputs.assign_public_ip }}
           force_new_deployment: true
