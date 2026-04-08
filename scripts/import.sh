@@ -24,10 +24,10 @@ if [ "$ENV" != "prod" ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${SCRIPT_DIR}/../root"
+# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ROOT_DIR="${SCRIPT_DIR}/../root"
 
-cd "$ROOT_DIR"
+# cd "$ROOT_DIR"
 
 # These imports belong in prod state because the existing AWS resources are prod-scoped.
 STATE_FILE="./state/prod.tfstate"

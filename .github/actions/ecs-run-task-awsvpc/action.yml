@@ -34,7 +34,7 @@ inputs:
   assign_public_ip:
     description: Whether to assign a public IP. Valid values are ENABLED or DISABLED.
     required: false
-    default: DISABLED
+    default: false
   force_new_deployment:
     description: Whether service mode should force a new deployment after updating the service.
     required: false

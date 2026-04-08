@@ -34,7 +34,7 @@ REPO_NAME="ecr-three-tier-modules"
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 git add .; 
-git commit -m "i have update the environment resoulution to the reusable workflows from deploy and subsequent resolution of environment variables to the reusable workflows from deploy.yml"
+git commit -m "updated assign public ip issue in probe workflow and update delete_ecr_image.sh script to accept for environment"
 git push  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public

@@ -116,7 +116,7 @@ jobs:
           # action so the workflow itself only needs to describe the desired frontend-facing network.
           security_group_name: ecs-node-frontend-sg-${{ vars.ENV_VAR }}
           subnet_tag_values: pri-sub-3a,pri-sub-4b
-          assign_public_ip: DISABLED
+          assign_public_ip: true
 
       - name: Wait for probe task result
         id: probe-result
