@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 git status
 git add .; 
-git commit -m "by using literal quotes '' fixed the input to TASK_ARN function for network configuration subnet_id_json and security_group_id in ecs-run-task-awsvpc action"
+git commit -m "removed jq code  network configuration subnet_id_json and security_group_id  and for assign_public_ip to use only ENABLED|DISABLED only in ecs-run-task-awsvpc action"
 git push --force  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
