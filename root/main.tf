@@ -227,7 +227,7 @@ module "lb" {
 
 module "ecs_ec2" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecs_ec2"
-  version = "0.0.11-probe"
+  version = "0.1.11-probe-ec2-non-awsvpc-tag"
   # version = "0.0.2-non-awsvpc"
   # backend_api_name           = var.backend_api_name
   backend_api_name           = "api-${local.env_suffix}.${var.domain_name}"
@@ -285,7 +285,7 @@ module "ecs_ec2" {
 
 # module "ecs_fargate" {
 #   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecs_fargate"
-#   version = "0.0.11-probe"
+#   version = "0.2.11-probe-fargate-tag"
 #   version = "0.0.1-fargate"
 #   backend_api_name = var.backend_api_name
 #   backend_api_name = "api-${local.env_suffix}.${var.domain_name}"
