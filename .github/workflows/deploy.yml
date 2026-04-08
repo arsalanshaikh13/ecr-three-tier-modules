@@ -270,8 +270,11 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
+      # Probe should try to reuse the current ECR image first and only build if the
+      # repository is still empty. That keeps the first probe self-seeding and later
+      # probe runs faster and more deterministic.
       build_image: true
-      fetch_image: false
+      fetch_image: true
     secrets: inherit
 
   # ---------------------------------------------------------

@@ -12,12 +12,12 @@ on:
         required: true
         type: string
       build_image:
-        description: "Whether the probe workflow should build and push a fresh probe image."
+        description: "Whether the probe workflow may build a fresh probe image if fetch cannot reuse one."
         required: false
         type: boolean
         default: true
       fetch_image:
-        description: "Whether the probe workflow should fetch the existing probe image from ECR."
+        description: "Whether the probe workflow should try to reuse the existing probe image from ECR first."
         required: false
         type: boolean
         default: false
@@ -86,8 +86,9 @@ jobs:
           ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: latest
-          # Normal deployment validation can build the probe image, but rollback verification
-          # can safely reuse the probe image that was already pushed earlier in the workflow.
+          # Normal deployment validation now follows a fetch-first strategy so only the very
+          # first probe run builds a probe image. Later probe runs can reuse the probe image
+          # already present in ECR unless the caller intentionally disables fetch and forces build.
           build_image: ${{ inputs.build_image }}
           fetch_image: ${{ inputs.fetch_image }}
           task_definition_name: ${{ inputs.project_name }}-probe-${{ vars.ENV_VAR }}

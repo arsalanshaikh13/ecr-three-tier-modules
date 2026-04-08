@@ -19,10 +19,10 @@ inputs:
     description: Optional additional image tag such as latest or seeder-latest.
     required: false
   build_image:
-    description: Whether to build and push a fresh image before registering the task definition.
+    description: Whether building a fresh image is allowed if no reusable image is fetched.
     required: true
   fetch_image:
-    description: Whether to fetch the latest existing image from ECR instead of building one.
+    description: Whether to try fetching the latest existing image from ECR before deciding to build.
     required: true
   task_definition_name:
     description: ECS task definition family/name to download before rendering a new revision.
@@ -57,9 +57,18 @@ runs:
 
     # The shared preparation action owns the entire pre-registration flow so deploy, probe,
     # and seeding jobs can reuse one implementation instead of duplicating the same steps.
+    - name: Try to reuse the latest image from ECR first
+      id: determine-image
+      if: ${{ inputs.fetch_image == 'true' }}
+      uses: ./.github/actions/ecr-fetch-image
+      with:
+        ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+        ecr_repository: ${{ inputs.ecr_repository }}
+        allow_missing: ${{ inputs.build_image }}
+
     - name: Build, tag, and push image to Amazon ECR
       id: build-image
-      if: ${{ inputs.build_image == 'true' }}
+      if: ${{ inputs.build_image == 'true' && steps.determine-image.outputs.image_found != 'true' }}
       uses: ./.github/actions/ecs-build-push-image
       with:
         workdir: ${{ inputs.workdir }}
@@ -69,22 +78,14 @@ runs:
         image_tag: ${{ inputs.image_tag }}
         additional_tag: ${{ inputs.additional_tag }}
 
-    - name: Determine Image URI (Fetch from ECR)
-      id: determine-image
-      if: ${{ inputs.build_image != 'true' && inputs.fetch_image == 'true' }}
-      uses: ./.github/actions/ecr-fetch-image
-      with:
-        ecr_registry: ${{ steps.login-ecr.outputs.registry }}
-        ecr_repository: ${{ inputs.ecr_repository }}
-
     - name: Validate image source was resolved
       id: resolve-image
       shell: bash
       run: |
-        IMAGE_URI="${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}"
+        IMAGE_URI="${{ steps.determine-image.outputs.image || steps.build-image.outputs.image }}"
 
-        # Fail clearly if the caller forgot to choose either build or fetch. This keeps the
-        # reusable action honest and prevents silent task-definition registration with no image.
+        # Probe wants "fetch first, build only if missing", while deploy can still do
+        # build-only or fetch-only. This shared resolution step makes that contract explicit.
         if [ -z "$IMAGE_URI" ]; then
           echo "Error: no image URI was resolved for repository '${{ inputs.ecr_repository }}'."
           exit 1

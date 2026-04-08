@@ -8,6 +8,10 @@ inputs:
   ecr_repository:
     description: Target ECR repository name.
     required: true
+  allow_missing:
+    description: Whether missing images should be returned as a soft "not found" result instead of failing the action.
+    required: false
+    default: "false"
 
 outputs:
   image:
@@ -16,6 +20,9 @@ outputs:
   image_tag:
     description: Latest discovered image tag.
     value: ${{ steps.fetch.outputs.image_tag }}
+  image_found:
+    description: Whether a latest image was found in the repository.
+    value: ${{ steps.fetch.outputs.image_found }}
 
 runs:
   using: composite
@@ -32,9 +39,19 @@ runs:
           --output text)
 
         if [ "$FETCHED_TAG" = "None" ] || [ -z "$FETCHED_TAG" ]; then
+          if [ "${{ inputs.allow_missing }}" = "true" ]; then
+            # Some callers intentionally try fetch-first and only build if ECR is empty.
+            # Returning an explicit "not found" signal keeps that fallback path clean.
+            echo "image_found=false" >> "$GITHUB_OUTPUT"
+            echo "image_tag=" >> "$GITHUB_OUTPUT"
+            echo "image=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "Error: Could not find any images in ECR repository ${{ inputs.ecr_repository }}"
           exit 1
         fi
 
+        echo "image_found=true" >> "$GITHUB_OUTPUT"
         echo "image_tag=$FETCHED_TAG" >> "$GITHUB_OUTPUT"
         echo "image=${{ inputs.ecr_registry }}/${{ inputs.ecr_repository }}:$FETCHED_TAG" >> "$GITHUB_OUTPUT"
