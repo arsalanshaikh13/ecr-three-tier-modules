@@ -95,10 +95,9 @@ curl --fail-with-body -X POST \
       "source_environment": "dev",
       "promote_frontend": "true",
       "promote_backend": "true",
-      "run_seeding_in_prod": "true"
-        "default_network_mode": "non-awsvpc",
-        "default_launch_type": "EC2"
-
+      "run_seeding_in_prod": "true",
+      "default_network_mode": "non-awsvpc",
+      "default_launch_type": "EC2"
     }
   }'
 # Small delay to allow GitHub to register the new run in run list.
