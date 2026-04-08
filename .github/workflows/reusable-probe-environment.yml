@@ -11,22 +11,6 @@ on:
         description: "Project name prefix used in ECS/ECR/SSM/S3 naming."
         required: true
         type: string
-      env_var:
-        description: "Short environment suffix used in AWS resource names, for example dev or prod."
-        required: true
-        type: string
-      aws_region:
-        description: "AWS region for the target environment."
-        required: true
-        type: string
-      aws_account_id:
-        description: "AWS account id used to construct the OIDC role ARN."
-        required: true
-        type: string
-      manifest_bucket:
-        description: "S3 bucket used to persist deployment manifests."
-        required: true
-        type: string
       update_pointers_on_success:
         description: "Whether a successful probe should advance deployment pointers in SSM."
         required: false
@@ -72,7 +56,7 @@ jobs:
     # and writes the corresponding success/failure manifests and deployment pointers.
     environment: ${{ inputs.environment }}
     env:
-      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ vars.ENV_VAR }}
 
     steps:
       - name: Checkout repository
@@ -81,24 +65,24 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Prepare probe task definition up to registration
         id: prepare-probe-task-def
         uses: ./.github/actions/ecs-prepare-task-definition
         with:
           workdir: lirw-three-tier/probe
-          ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ inputs.env_var }}
+          ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: latest
           build_image: true
           fetch_image: false
-          task_definition_name: ${{ inputs.project_name }}-probe-${{ inputs.env_var }}
-          task_definition_output_path: task-definition-probe-${{ inputs.env_var }}.json
+          task_definition_name: ${{ inputs.project_name }}-probe-${{ vars.ENV_VAR }}
+          task_definition_output_path: task-definition-probe-${{ vars.ENV_VAR }}.json
           # Probe uses its own standalone task family and container name, but the shared action
           # still handles the repetitive image/download/render/register sequence for us.
-          container_name: ${{ inputs.project_name }}-probe-${{ inputs.env_var }}
+          container_name: ${{ inputs.project_name }}-probe-${{ vars.ENV_VAR }}
 
       - name: Derive probe reporting contract
         id: probe-config
@@ -130,7 +114,7 @@ jobs:
           launch_type: FARGATE
           # The reusable probe workflow keeps awsvpc-specific network lookup inside the awsvpc
           # action so the workflow itself only needs to describe the desired frontend-facing network.
-          security_group_name: ecs-node-frontend-sg-${{ inputs.env_var }}
+          security_group_name: ecs-node-frontend-sg-${{ vars.ENV_VAR }}
           subnet_tag_values: pri-sub-3a,pri-sub-4b
           assign_public_ip: DISABLED
 
@@ -179,7 +163,7 @@ jobs:
         with:
           metadata_glob: deploy-metadata/deploy-metadata-*-${{ inputs.environment }}.json
           manifest_dir: manifests/success
-          bucket: ${{ inputs.manifest_bucket }}
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
           bucket_prefix_root: ${{ steps.probe-config.outputs.bucket_prefix_root }}
           project: ${{ inputs.project_name }}
           environment: ${{ inputs.environment }}
@@ -215,7 +199,7 @@ jobs:
             echo "- Environment: \`${{ inputs.environment }}\`"
             echo "- Probe reason: ${{ steps.probe-result.outputs.result_reason }}"
             echo "- Manifest artifact: \`${{ steps.probe-config.outputs.success_artifact_name }}\`"
-            echo "- Manifest bucket: \`${{ inputs.manifest_bucket }}\`"
+            echo "- Manifest bucket: \`${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}\`"
             echo "- Advances deployment pointers: \`${{ inputs.update_pointers_on_success }}\`"
             echo
             echo "### Probe Log Artifact"
@@ -228,7 +212,7 @@ jobs:
         with:
           metadata_glob: deploy-metadata/deploy-metadata-*-${{ inputs.environment }}.json
           manifest_dir: manifests/failure
-          bucket: ${{ inputs.manifest_bucket }}
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
           bucket_prefix_root: ${{ steps.probe-config.outputs.bucket_prefix_root }}
           project: ${{ inputs.project_name }}
           environment: ${{ inputs.environment }}

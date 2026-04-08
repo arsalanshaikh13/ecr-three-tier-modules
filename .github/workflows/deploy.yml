@@ -241,9 +241,6 @@ jobs:
       environment: ${{ matrix.environment }}
       component: ${{ matrix.component }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
       # Default to non-awsvpc so existing environments keep working even before the new
       # environment-scoped vars are populated. Environments can opt into awsvpc by setting vars.
       service_network_mode: ${{ vars.SERVICE_NETWORK_MODE || 'non-awsvpc' }}
@@ -273,10 +270,6 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
-      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -297,10 +290,6 @@ jobs:
       environment: ${{ matrix.environment }}
       component: ${{ matrix.component }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
-      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -321,10 +310,6 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
-      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -342,10 +327,6 @@ jobs:
       environment: ${{ inputs.target_environment }}
       component: ${{ inputs.rollback_component }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
-      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
       rollback_task_definition_arn: ${{ inputs.rollback_task_definition_arn }}
       rollback_manifest_s3_key: ${{ inputs.rollback_manifest_s3_key }}
     secrets: inherit
@@ -364,10 +345,6 @@ jobs:
     with:
       environment: ${{ inputs.target_environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
-      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -390,10 +367,6 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      env_var: ${{ vars.ENV_VAR }}
-      aws_region: ${{ vars.AWS_REGION }}
-      aws_account_id: ${{ vars.ACCOUNT_ID }}
-      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
       seeder_network_mode: ${{ vars.SEEDER_NETWORK_MODE || 'non-awsvpc' }}
       seeder_security_group_name: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
       seeder_subnet_tag_values: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}

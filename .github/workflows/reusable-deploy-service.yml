@@ -15,18 +15,6 @@ on:
         description: "Project name prefix used in ECS/ECR naming."
         required: true
         type: string
-      env_var:
-        description: "Short environment suffix used in AWS resource names, for example dev or prod."
-        required: true
-        type: string
-      aws_region:
-        description: "AWS region for the target environment."
-        required: true
-        type: string
-      aws_account_id:
-        description: "AWS account id used to construct the OIDC role ARN."
-        required: true
-        type: string
       build_image:
         description: "Whether this deploy should build and push a fresh image."
         required: true
@@ -102,7 +90,9 @@ jobs:
     # vars stay attached to the deployment unit instead of the caller needing to duplicate them.
     environment: ${{ inputs.environment }}
     env:
-      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+      # Resolve environment-specific values inside the bound job so prod/dev do not inherit
+      # repo-level defaults from the caller.
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ vars.ENV_VAR }}
 
     steps:
       - name: Checkout repository
@@ -111,15 +101,15 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Prepare task definition up to registration
         id: prepare-task-def
         uses: ./.github/actions/ecs-prepare-task-definition
         with:
           workdir: lirw-three-tier/${{ inputs.component }}
-          ecr_repository: ${{ inputs.project_name }}-${{ inputs.component }}-repo-${{ inputs.env_var }}
+          ecr_repository: ${{ inputs.project_name }}-${{ inputs.component }}-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: latest
           build_image: ${{ inputs.build_image }}

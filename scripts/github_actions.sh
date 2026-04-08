@@ -33,7 +33,8 @@ REPO_NAME="ecr-three-tier-modules"
 # pwd
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
-git add .; git commit -m "updated the logic to get log group name and log stream name in deploy.yml file for probe job"
+git add .; 
+git commit -m "i have update the environment resoulution to the reusable workflows from deploy and subsequent resolution of environment variables to the reusable workflows from deploy.yml"
 git push  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -49,7 +50,7 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # has an older workflow definition registered by GitHub.
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
-  -f action_type=rollback \
+  -f action_type=deploy \
   -f target_environment=prod \
   -f build_frontend=true \
   -f get_frontend=false \

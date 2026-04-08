@@ -15,22 +15,6 @@ on:
         description: "Project name prefix used in ECS/SSM/S3 naming."
         required: true
         type: string
-      env_var:
-        description: "Short environment suffix used in AWS resource names, for example dev or prod."
-        required: true
-        type: string
-      aws_region:
-        description: "AWS region for the target environment."
-        required: true
-        type: string
-      aws_account_id:
-        description: "AWS account id used to construct the OIDC role ARN."
-        required: true
-        type: string
-      manifest_bucket:
-        description: "S3 bucket used to persist deployment manifests."
-        required: true
-        type: string
     outputs:
       environment:
         description: "Environment that was rolled back."
@@ -66,7 +50,7 @@ jobs:
     # and logs all stay grouped under the same deployment surface as the original rollout.
     environment: ${{ inputs.environment }}
     env:
-      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ vars.ENV_VAR }}
 
     steps:
       - name: Checkout repository
@@ -75,8 +59,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Download deployment metadata artifact
         uses: actions/download-artifact@v4
@@ -144,7 +128,7 @@ jobs:
         uses: ./.github/actions/deployment-manifest-write
         with:
           manifest_dir: manifests/rollback
-          bucket: ${{ inputs.manifest_bucket }}
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
           bucket_prefix: ${{ inputs.project_name }}/deployments/${{ inputs.environment }}/${{ inputs.component }}/rollback
           project: ${{ inputs.project_name }}
           environment: ${{ inputs.environment }}
