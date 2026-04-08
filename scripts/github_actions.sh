@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "testing auto-rollback by making probe app build image and putting bug while building image by giving incorrect folder"
+git commit -m "auto rollback done successfully"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -53,10 +53,10 @@ if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
   -f action_type=deploy \
   -f target_environment=dev \
-  -f build_frontend=true \
-  -f get_frontend=false \
-  -f build_backend=true \
-  -f get_backend=false \
+  -f build_frontend=false \
+  -f get_frontend=true \
+  -f build_backend=false \
+  -f get_backend=true \
   -f run_seeding=false; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
