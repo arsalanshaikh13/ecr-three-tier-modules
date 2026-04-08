@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 git status
 git add .; 
-git commit -m "removed jq code for SUBNET_ID_JSON and brought back older code in ecs-run-task-awsvpc action"
+git commit -m "removed jq check for SUBNET_ID_JSON and brought back older code in ecs-run-task-awsvpc action"
 git push --force  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public

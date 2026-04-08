@@ -101,15 +101,6 @@ runs:
             ;;
         esac
 
-        if [ -n "$SUBNET_IDS_JSON" ] && ! echo "$SUBNET_IDS_JSON" | jq -e . >/dev/null 2>&1; then
-          echo "Error: subnet_ids_json is not valid JSON: $SUBNET_IDS_JSON"
-          exit 1
-        fi
-
-        if [ -n "$SUBNET_IDS_JSON" ] && ! echo "$SUBNET_IDS_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
-          echo "Error: subnet_ids_json must be a JSON array."
-          exit 1
-        fi
 
         echo "subnet_ids_json=$SUBNET_IDS_JSON" >> "$GITHUB_OUTPUT"
         echo "security_group_id=$SECURITY_GROUP_ID" >> "$GITHUB_OUTPUT"
