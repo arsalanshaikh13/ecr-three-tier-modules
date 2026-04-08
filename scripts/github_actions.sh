@@ -35,7 +35,8 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "for prod switched to bridge network "
+# git commit -m "for switching both dev and prod to FARGATE "
+git commit -m "rollback manual testing "
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -49,21 +50,21 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # Fail immediately if GitHub cannot dispatch the workflow. If this returns HTTP 422
 # while the branch file has workflow_dispatch, the default/main branch likely still
 # has an older workflow definition registered by GitHub.
-# if ! gh workflow run "deploy.yml" \
-#   --ref multi-env-actions \
-#   -f action_type=deploy \
-#   -f target_environment=dev \
-#   -f build_frontend=true \
-#   -f get_frontend=false \
-#   -f build_backend=true \
-#   -f get_backend=false \
-#   -f run_seeding=true \
-#   -f default_network_mode=non-awsvpc \
-#   -f default_launch_type=EC2; then
-#   echo "Failed to dispatch deploy.yml."
-#   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
-#   exit 1
-# fi
+if ! gh workflow run "deploy.yml" \
+  --ref multi-env-actions \
+  -f action_type=rollback \
+  -f target_environment=prod \
+  -f build_frontend=true \
+  -f get_frontend=false \
+  -f build_backend=true \
+  -f get_backend=false \
+  -f run_seeding=true \
+  -f default_network_mode=non-awsvpc \
+  -f default_launch_type=EC2; then
+  echo "Failed to dispatch deploy.yml."
+  echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
+  exit 1
+fi
 
 # curl --fail-with-body -X POST \
 #   -H "Authorization: token $(gh auth token)" \
@@ -85,21 +86,21 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 #   }'
 
 
-curl --fail-with-body -X POST \
-  -H "Authorization: token $(gh auth token)" \
-  -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/$GH_USER/$REPO_NAME/actions/workflows/promotion.yml/dispatches \
-  -d '{
-    "ref": "multi-env-actions",
-    "inputs": {
-      "source_environment": "dev",
-      "promote_frontend": "true",
-      "promote_backend": "true",
-      "run_seeding_in_prod": "false",
-      "default_network_mode": "non-awsvpc",
-      "default_launch_type": "EC2"
-    }
-  }'
+# curl --fail-with-body -X POST \
+#   -H "Authorization: token $(gh auth token)" \
+#   -H "Accept: application/vnd.github.v3+json" \
+#   https://api.github.com/repos/$GH_USER/$REPO_NAME/actions/workflows/promotion.yml/dispatches \
+#   -d '{
+#     "ref": "multi-env-actions",
+#     "inputs": {
+#       "source_environment": "dev",
+#       "promote_frontend": "true",
+#       "promote_backend": "true",
+#       "run_seeding_in_prod": "false",
+#       "default_network_mode": "non-awsvpc",
+#       "default_launch_type": "EC2"
+#     }
+#   }'
 # Small delay to allow GitHub to register the new run in run list.
 # sleep 3
 
