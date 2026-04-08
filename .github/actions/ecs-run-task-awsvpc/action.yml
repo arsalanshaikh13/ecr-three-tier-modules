@@ -34,7 +34,7 @@ inputs:
   assign_public_ip:
     description: Whether to assign a public IP. Valid values are ENABLED or DISABLED.
     required: false
-    default: false
+    default: DISABLED
   force_new_deployment:
     description: Whether service mode should force a new deployment after updating the service.
     required: false
@@ -53,6 +53,9 @@ outputs:
   security_group_id:
     description: Resolved security group id.
     value: ${{ steps.resolve-network.outputs.security_group_id }}
+  assign_public_ip:
+    description: Normalized assignPublicIp value for ECS awsvpc configuration.
+    value: ${{ steps.resolve-network.outputs.assign_public_ip }}
 
 runs:
   using: composite
@@ -68,11 +71,14 @@ runs:
     - id: resolve-network
       shell: bash
       run: |
+        set -euo pipefail
+
         # Callers can either pass concrete IDs directly or let this action resolve them from
         # the awsvpc-specific lookup inputs. Keeping both paths makes the action reusable across
         # tightly controlled workflows and more generic callers.
         SUBNET_IDS_JSON="${{ inputs.subnet_ids_json }}"
         SECURITY_GROUP_ID="${{ inputs.security_group_id }}"
+        ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
         if [ -z "$SUBNET_IDS_JSON" ]; then
           SUBNET_IDS_JSON="${{ steps.lookup-network.outputs.subnet_ids_json }}"
@@ -82,8 +88,32 @@ runs:
           SECURITY_GROUP_ID="${{ steps.lookup-network.outputs.security_group_id }}"
         fi
 
+        case "${ASSIGN_PUBLIC_IP^^}" in
+          ENABLED|TRUE)
+            ASSIGN_PUBLIC_IP="ENABLED"
+            ;;
+          DISABLED|FALSE)
+            ASSIGN_PUBLIC_IP="DISABLED"
+            ;;
+          *)
+            echo "Error: assign_public_ip must be one of ENABLED, DISABLED, true, or false."
+            exit 1
+            ;;
+        esac
+
+        if [ -n "$SUBNET_IDS_JSON" ] && ! echo "$SUBNET_IDS_JSON" | jq -e . >/dev/null 2>&1; then
+          echo "Error: subnet_ids_json is not valid JSON: $SUBNET_IDS_JSON"
+          exit 1
+        fi
+
+        if [ -n "$SUBNET_IDS_JSON" ] && ! echo "$SUBNET_IDS_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          echo "Error: subnet_ids_json must be a JSON array."
+          exit 1
+        fi
+
         echo "subnet_ids_json=$SUBNET_IDS_JSON" >> "$GITHUB_OUTPUT"
         echo "security_group_id=$SECURITY_GROUP_ID" >> "$GITHUB_OUTPUT"
+        echo "assign_public_ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
 
     - id: run_or_update
       shell: bash
@@ -111,9 +141,21 @@ runs:
             fi
 
             if [ -n "${{ steps.resolve-network.outputs.subnet_ids_json }}" ] && [ -n "${{ steps.resolve-network.outputs.security_group_id }}" ]; then
+              NETWORK_CONFIGURATION=$(jq -cn \
+                --argjson subnets '${{ steps.resolve-network.outputs.subnet_ids_json }}' \
+                --arg security_group '${{ steps.resolve-network.outputs.security_group_id }}' \
+                --arg assign_public_ip '${{ steps.resolve-network.outputs.assign_public_ip }}' \
+                '{
+                  awsvpcConfiguration: {
+                    subnets: $subnets,
+                    securityGroups: [$security_group],
+                    assignPublicIp: $assign_public_ip
+                  }
+                }')
+
               UPDATE_ARGS+=(
                 --network-configuration
-                '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":["${{ steps.resolve-network.outputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}'
+                "$NETWORK_CONFIGURATION"
               )
             fi
 
@@ -130,11 +172,23 @@ runs:
               exit 1
             fi
 
+            NETWORK_CONFIGURATION=$(jq -cn \
+              --argjson subnets '${{ steps.resolve-network.outputs.subnet_ids_json }}' \
+              --arg security_group '${{ steps.resolve-network.outputs.security_group_id }}' \
+              --arg assign_public_ip '${{ steps.resolve-network.outputs.assign_public_ip }}' \
+              '{
+                awsvpcConfiguration: {
+                  subnets: $subnets,
+                  securityGroups: [$security_group],
+                  assignPublicIp: $assign_public_ip
+                }
+              }')
+
             TASK_ARN=$(aws ecs run-task \
               --cluster "${{ inputs.cluster }}" \
               --task-definition "${{ inputs.task_definition }}" \
               --launch-type "${{ inputs.launch_type }}" \
-              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":["${{ steps.resolve-network.outputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
+              --network-configuration "$NETWORK_CONFIGURATION" \
               --query "tasks[0].taskArn" \
               --output text)
 
