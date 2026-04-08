@@ -82,7 +82,7 @@ jobs:
         id: prepare-probe-task-def
         uses: ./.github/actions/ecs-prepare-task-definition
         with:
-          workdir: lirw-three-tier/probe
+          workdir: lirw-three-tier/prob
           ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: latest
