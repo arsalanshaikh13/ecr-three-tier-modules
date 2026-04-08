@@ -33,10 +33,10 @@ REPO_NAME="ecr-three-tier-modules"
 # pwd
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
-git status
+# git status
 git add .; 
-git commit -m "removed jq code  network configuration subnet_id_json and security_group_id  and for assign_public_ip to use only ENABLED|DISABLED only in ecs-run-task-awsvpc action"
-git push --force  ;
+git commit -m "updated setup.sh file for running on different env"
+git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
 
@@ -52,21 +52,21 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
   -f action_type=deploy \
-  -f target_environment=prod \
+  -f target_environment=dev \
   -f build_frontend=true \
   -f get_frontend=false \
   -f build_backend=true \
   -f get_backend=false \
-  -f run_seeding=true; then
+  -f run_seeding=false; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
   exit 1
 fi
 
-# curl -X POST \
+# curl --fail-with-body -X POST \
 #   -H "Authorization: token $(gh auth token)" \
 #   -H "Accept: application/vnd.github.v3+json" \
-#   https://api.github.com/repos//$GH_USER/$REPO_NAME/actions/workflows/deploy.yml/dispatches \
+#   "https://api.github.com/repos/$GH_USER/$REPO_NAME/actions/workflows/deploy.yml/dispatches" \
 #   -d '{
 #     "ref": "multi-env-actions",
 #     "inputs": {
