@@ -15,6 +15,31 @@ on:
         description: "Project name prefix used in ECS/SSM/S3 naming."
         required: true
         type: string
+      service_launch_type:
+        description: "Optional service launch type override for rollback. Supported values are EC2 and FARGATE."
+        required: false
+        type: string
+        default: ""
+      service_network_mode:
+        description: "Optional service network mode override for rollback. Supported values are non-awsvpc and awsvpc."
+        required: false
+        type: string
+        default: ""
+      security_group_name:
+        description: "Optional awsvpc security group name override for rollback."
+        required: false
+        type: string
+        default: ""
+      subnet_tag_values:
+        description: "Optional awsvpc subnet Name tag values override for rollback."
+        required: false
+        type: string
+        default: ""
+      assign_public_ip:
+        description: "Optional awsvpc assignPublicIp override for rollback."
+        required: false
+        type: string
+        default: ""
       rollback_task_definition_arn:
         description: "Optional explicit task definition ARN for manual rollback."
         required: false
@@ -141,12 +166,59 @@ jobs:
           echo "task_definition_arn=$TARGET_ARN" >> "$GITHUB_OUTPUT"
           echo "reason=$TARGET_REASON" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve rollback execution mode
+        id: rollback-execution
+        shell: bash
+        run: |
+          # Manual rollback should recover using the same runtime/network model that the
+          # target service expects, not assume EC2/non-awsvpc by default.
+          LAUNCH_TYPE="${{ inputs.service_launch_type }}"
+          NETWORK_MODE="${{ inputs.service_network_mode }}"
+          SECURITY_GROUP_NAME="${{ inputs.security_group_name }}"
+          SUBNET_TAG_VALUES="${{ inputs.subnet_tag_values }}"
+          ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
+
+          if [ -z "$LAUNCH_TYPE" ]; then
+            LAUNCH_TYPE="${{ vars.SERVICE_LAUNCH_TYPE || 'EC2' }}"
+          fi
+
+          if [ -z "$NETWORK_MODE" ]; then
+            if [ "$LAUNCH_TYPE" = "FARGATE" ]; then
+              NETWORK_MODE="awsvpc"
+            else
+              NETWORK_MODE="${{ vars.SERVICE_NETWORK_MODE || 'non-awsvpc' }}"
+            fi
+          fi
+
+          if [ -z "$SECURITY_GROUP_NAME" ]; then
+            SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+          fi
+
+          if [ -z "$SUBNET_TAG_VALUES" ]; then
+            SUBNET_TAG_VALUES="${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+          fi
+
+          if [ -z "$ASSIGN_PUBLIC_IP" ]; then
+            ASSIGN_PUBLIC_IP="${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+          fi
+
+          echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
+          echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
+          echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
+          echo "subnet_tag_values=$SUBNET_TAG_VALUES" >> "$GITHUB_OUTPUT"
+          echo "assign_public_ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
+
       - name: Roll back ECS service
         uses: ./.github/actions/ecs-rollback-service
         with:
           cluster: ${{ env.ECS_CLUSTER }}
           service: ${{ inputs.component }}-service
           task_definition: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+          service_launch_type: ${{ steps.rollback-execution.outputs.launch_type }}
+          service_network_mode: ${{ steps.rollback-execution.outputs.network_mode }}
+          security_group_name: ${{ steps.rollback-execution.outputs.security_group_name }}
+          subnet_tag_values: ${{ steps.rollback-execution.outputs.subnet_tag_values }}
+          assign_public_ip: ${{ steps.rollback-execution.outputs.assign_public_ip }}
 
       # - name: Wait for rollback stability
       #   uses: ./.github/actions/ecs-wait-service-stable

@@ -12,15 +12,38 @@ on:
         required: true
         type: string
       build_image:
-        description: "Whether the probe workflow may build a fresh probe image if fetch cannot reuse one."
-        required: false
+        description: "Whether the caller allows this probe run to build a fresh probe image if fetch cannot reuse one."
+        required: true
         type: boolean
-        default: true
       fetch_image:
-        description: "Whether the probe workflow should try to reuse the existing probe image from ECR first."
-        required: false
+        description: "Whether the caller wants this probe run to try reusing the existing probe image from ECR first."
+        required: true
         type: boolean
-        default: false
+      probe_network_mode:
+        description: "Optional probe execution network mode override. Supported values are non-awsvpc and awsvpc."
+        required: false
+        type: string
+        default: ""
+      probe_launch_type:
+        description: "Optional probe launch type override. Supported values are EC2 and FARGATE."
+        required: false
+        type: string
+        default: ""
+      probe_security_group_name:
+        description: "Optional awsvpc security group name override for probe execution."
+        required: false
+        type: string
+        default: ""
+      probe_subnet_tag_values:
+        description: "Optional awsvpc subnet Name tag values override for probe execution."
+        required: false
+        type: string
+        default: ""
+      probe_assign_public_ip:
+        description: "Optional awsvpc assignPublicIp override for probe execution."
+        required: false
+        type: string
+        default: ""
       update_pointers_on_success:
         description: "Whether a successful probe should advance deployment pointers in SSM."
         required: false
@@ -86,9 +109,9 @@ jobs:
           ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: latest
-          # Normal deployment validation now follows a fetch-first strategy so only the very
-          # first probe run builds a probe image. Later probe runs can reuse the probe image
-          # already present in ECR unless the caller intentionally disables fetch and forces build.
+          # Image policy is caller-owned on purpose. That keeps deploy.yml as the single place
+          # where we decide whether a given probe invocation should fetch-first, fetch-only,
+          # or force a rebuild, while this reusable workflow stays focused on execution.
           build_image: ${{ inputs.build_image }}
           fetch_image: ${{ inputs.fetch_image }}
           task_definition_name: ${{ inputs.project_name }}-probe-${{ vars.ENV_VAR }}
@@ -118,25 +141,80 @@ jobs:
             echo "summary_slug=deployment" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run probe task in private subnets
+      - name: Resolve probe execution mode
+        id: probe-execution
+        shell: bash
+        run: |
+          # Probe execution settings are resolved inside the reusable workflow's
+          # environment-bound job so dev/prod can diverge safely without the caller
+          # accidentally resolving the wrong environment-scoped values too early.
+          NETWORK_MODE="${{ inputs.probe_network_mode }}"
+          LAUNCH_TYPE="${{ inputs.probe_launch_type }}"
+          SECURITY_GROUP_NAME="${{ inputs.probe_security_group_name }}"
+          SUBNET_TAG_VALUES="${{ inputs.probe_subnet_tag_values }}"
+          ASSIGN_PUBLIC_IP="${{ inputs.probe_assign_public_ip }}"
+
+          if [ -z "$NETWORK_MODE" ]; then
+            NETWORK_MODE="${{ vars.PROBE_NETWORK_MODE || 'awsvpc' }}"
+          fi
+
+          if [ -z "$LAUNCH_TYPE" ]; then
+            if [ "$NETWORK_MODE" = "awsvpc" ]; then
+              LAUNCH_TYPE="${{ vars.PROBE_LAUNCH_TYPE || 'FARGATE' }}"
+            else
+              LAUNCH_TYPE="${{ vars.PROBE_LAUNCH_TYPE || 'EC2' }}"
+            fi
+          fi
+
+          if [ -z "$SECURITY_GROUP_NAME" ]; then
+            SECURITY_GROUP_NAME="${{ vars.PROBE_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}"
+          fi
+
+          if [ -z "$SUBNET_TAG_VALUES" ]; then
+            SUBNET_TAG_VALUES="${{ vars.PROBE_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}"
+          fi
+
+          if [ -z "$ASSIGN_PUBLIC_IP" ]; then
+            ASSIGN_PUBLIC_IP="${{ vars.PROBE_ASSIGN_PUBLIC_IP || 'ENABLED' }}"
+          fi
+
+          echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
+          echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
+          echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
+          echo "subnet_tag_values=$SUBNET_TAG_VALUES" >> "$GITHUB_OUTPUT"
+          echo "assign_public_ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
+
+      - name: Run probe task (non-awsvpc)
         id: run-probe
+        if: ${{ steps.probe-execution.outputs.network_mode != 'awsvpc' }}
+        uses: ./.github/actions/ecs-run-task
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
+          # Probe can now execute on EC2 non-awsvpc just like seeding when the target
+          # environment wants bridge/host networking instead of Fargate-style awsvpc.
+          launch_type: ${{ steps.probe-execution.outputs.launch_type }}
+
+      - name: Run probe task (awsvpc)
+        id: run-probe-awsvpc
+        if: ${{ steps.probe-execution.outputs.network_mode == 'awsvpc' }}
         uses: ./.github/actions/ecs-run-task-awsvpc
         with:
           cluster: ${{ env.ECS_CLUSTER }}
           task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
-          launch_type: FARGATE
+          launch_type: ${{ steps.probe-execution.outputs.launch_type }}
           # The reusable probe workflow keeps awsvpc-specific network lookup inside the awsvpc
-          # action so the workflow itself only needs to describe the desired frontend-facing network.
-          security_group_name: ecs-node-frontend-sg-${{ vars.ENV_VAR }}
-          subnet_tag_values: pri-sub-3a,pri-sub-4b
-          assign_public_ip: ENABLED
+          # action so the workflow itself only needs to describe the desired probe-facing network.
+          security_group_name: ${{ steps.probe-execution.outputs.security_group_name }}
+          subnet_tag_values: ${{ steps.probe-execution.outputs.subnet_tag_values }}
+          assign_public_ip: ${{ steps.probe-execution.outputs.assign_public_ip }}
 
       - name: Wait for probe task result
         id: probe-result
         uses: ./.github/actions/ecs-wait-task-result
         with:
           cluster: ${{ env.ECS_CLUSTER }}
-          task_arn: ${{ steps.run-probe.outputs.task_arn }}
+          task_arn: ${{ steps.run-probe.outputs.task_arn || steps.run-probe-awsvpc.outputs.task_arn }}
           task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
           log_file: probe-logs-${{ inputs.environment }}.txt
           fetch_logs: true

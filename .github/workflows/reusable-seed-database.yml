@@ -11,6 +11,19 @@ on:
         description: "Project name prefix used in ECS/ECR naming."
         required: true
         type: string
+      build_image:
+        description: "Whether the caller wants seeding to build a fresh image when reuse is not desired or not possible."
+        required: true
+        type: boolean
+      fetch_image:
+        description: "Whether the caller wants seeding to try reusing the latest existing seeder image from ECR first."
+        required: true
+        type: boolean
+      seeder_launch_type:
+        description: "Seeder launch type. Supported values are EC2 and FARGATE."
+        required: false
+        type: string
+        default: EC2
       seeder_network_mode:
         description: "Seeder execution network mode. Supported values are non-awsvpc and awsvpc."
         required: false
@@ -85,8 +98,10 @@ jobs:
           ecr_repository: ${{ inputs.project_name }}-database-seeder-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: seeder-latest
-          build_image: true
-          fetch_image: false
+          # Seeder follows the same contract as deploy and probe: the caller decides image
+          # policy, while the reusable workflow handles registration, execution, and auditing.
+          build_image: ${{ inputs.build_image }}
+          fetch_image: ${{ inputs.fetch_image }}
           task_definition_name: ${{ inputs.project_name }}-db-seeder-${{ vars.ENV_VAR }}
           task_definition_output_path: task-definition-seeder.json
           # Seeder keeps its own container naming, but the repetitive preparation flow is shared.
@@ -99,7 +114,7 @@ jobs:
         with:
           cluster: ${{ env.ECS_CLUSTER }}
           task_definition: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
-          launch_type: EC2
+          launch_type: ${{ inputs.seeder_launch_type }}
 
       - name: Trigger ECS DB seeding (awsvpc)
         id: run-seeder-awsvpc
@@ -108,8 +123,9 @@ jobs:
         with:
           cluster: ${{ env.ECS_CLUSTER }}
           task_definition: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
-          launch_type: FARGATE
-          # awsvpc seeding can be configured per environment without changing workflow code.
+          launch_type: ${{ inputs.seeder_launch_type }}
+          # awsvpc seeding can now run on either FARGATE or EC2 awsvpc. The caller chooses
+          # the launch type, while this reusable workflow keeps the task execution flow shared.
           security_group_name: ${{ inputs.seeder_security_group_name }}
           subnet_tag_values: ${{ inputs.seeder_subnet_tag_values }}
           assign_public_ip: ${{ inputs.seeder_assign_public_ip }}

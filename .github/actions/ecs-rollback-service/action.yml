@@ -11,18 +11,63 @@ inputs:
   task_definition:
     description: Previously known-good task definition ARN or family:revision.
     required: true
+  service_launch_type:
+    description: Launch type of the service being rolled back. Supported values are EC2 and FARGATE.
+    required: false
+    default: EC2
+  service_network_mode:
+    description: Network mode of the service being rolled back. Supported values are non-awsvpc and awsvpc.
+    required: false
+    default: non-awsvpc
+  security_group_name:
+    description: Optional awsvpc security group name to resolve when rolling back an awsvpc service.
+    required: false
+    default: ""
+  subnet_tag_values:
+    description: Optional awsvpc subnet Name tag values to resolve when rolling back an awsvpc service.
+    required: false
+    default: ""
+  assign_public_ip:
+    description: Whether awsvpc rollback should assign a public IP.
+    required: false
+    default: DISABLED
 
 runs:
   using: composite
   steps:
-    - shell: bash
+    - name: Validate rollback execution mode
+      shell: bash
       run: |
         set -euo pipefail
 
-        # Reuse the previously captured task definition ARN as the rollback target so
-        # the workflow can recover without guessing which revision was last healthy.
-        aws ecs update-service \
-          --cluster "${{ inputs.cluster }}" \
-          --service "${{ inputs.service }}" \
-          --task-definition "${{ inputs.task_definition }}" \
-          --force-new-deployment
+        if [ "${{ inputs.service_launch_type }}" = "FARGATE" ] && [ "${{ inputs.service_network_mode }}" != "awsvpc" ]; then
+          echo "Error: FARGATE services must use awsvpc rollback mode."
+          exit 1
+        fi
+
+    - name: Roll back ECS service (non-awsvpc)
+      if: ${{ inputs.service_network_mode != 'awsvpc' }}
+      uses: ./.github/actions/ecs-run-task
+      with:
+        run_mode: service
+        cluster: ${{ inputs.cluster }}
+        service: ${{ inputs.service }}
+        task_definition: ${{ inputs.task_definition }}
+        # Rollback is still a service update under the hood. The non-awsvpc runner action
+        # already owns the correct ECS API call for EC2 bridge/host-style services.
+        force_new_deployment: true
+
+    - name: Roll back ECS service (awsvpc)
+      if: ${{ inputs.service_network_mode == 'awsvpc' }}
+      uses: ./.github/actions/ecs-run-task-awsvpc
+      with:
+        run_mode: service
+        cluster: ${{ inputs.cluster }}
+        service: ${{ inputs.service }}
+        task_definition: ${{ inputs.task_definition }}
+        # Fargate and EC2 awsvpc services both use the awsvpc execution path. The awsvpc
+        # action resolves network IDs and constructs valid network configuration JSON.
+        security_group_name: ${{ inputs.security_group_name }}
+        subnet_tag_values: ${{ inputs.subnet_tag_values }}
+        assign_public_ip: ${{ inputs.assign_public_ip }}
+        force_new_deployment: true

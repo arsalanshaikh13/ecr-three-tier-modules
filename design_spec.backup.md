@@ -125,11 +125,6 @@ Purpose:
 
 Deploy result is not considered final success until post-deploy probe passes.
 
-Running-version note:
-- deploy image strategy is caller-owned at the top-level orchestration workflow
-- the reusable deploy workflow receives explicit `build_image` and `fetch_image` inputs
-- the reusable deploy workflow resolves environment-scoped values inside its bound job, not in the caller
-
 ### 3.3 Probe deployment
 
 Purpose:
@@ -137,16 +132,6 @@ Purpose:
 - capture health result, logs, and reason
 - update trusted pointers only on success
 - persist success or failure manifests
-
-Running-version note:
-- normal deployment probe uses a fetch-first image strategy
-- it first tries to reuse the latest existing probe image from ECR
-- it only builds the probe image if fetch does not find one
-- rollback verification probe is fetch-only and does not rebuild the probe image
-- probe execution mode is now flexible and can run as:
-  - `FARGATE + awsvpc`
-  - `EC2 + awsvpc`
-  - `EC2 + non-awsvpc`
 
 ### 3.4 Automatic rollback
 
@@ -234,10 +219,6 @@ Action responsibilities:
 - manifest write
 - network ID lookup where needed
 
-Important running-version rule:
-- the awsvpc execution action owns awsvpc-specific network lookup and network-configuration assembly
-- workflows should describe network intent, not rebuild subnet/security-group lookup logic inline
-
 ### 4.2 What stays workflow-level
 
 Reusable workflows own multi-step orchestration with job-level semantics.
@@ -259,11 +240,6 @@ Workflow responsibilities:
 - state transitions
 - success/failure branching
 - deployment/rollback/seeding lifecycle decisions
-
-Important running-version rule:
-- reusable workflows should not hide deployment image policy defaults
-- reusable workflows execute the caller's requested policy
-- top-level workflows decide whether a run is build-only, fetch-only, or fetch-first/build-if-missing
 
 ### 4.3 What stays top-level
 
@@ -328,23 +304,6 @@ This applies especially to:
 - promotion reading lower-environment manifests
 - pointer batch update actions reading older deploy metadata artifacts
 
-### 5.4 Policy ownership rule
-
-The running architecture uses the following policy boundary:
-
-- top-level workflow owns policy
-- reusable workflow owns job execution
-- action owns operational mechanics
-
-In practice this means top-level orchestration decides:
-
-- `build_image`
-- `fetch_image`
-- target environments
-- whether rollback verification should advance pointers
-
-while reusable workflows do not silently invent image-strategy behavior on behalf of the caller.
-
 ---
 
 ## 6. Deployment Metadata Contract
@@ -381,10 +340,6 @@ It allows:
 - rollback to know what failed
 - manifests to be written accurately
 - promotion to consume validated artifact identity
-
-Running-version note:
-- deployment metadata is written once during deploy and passed forward as workflow-local artifacts
-- downstream jobs consume this metadata instead of inferring deployment state from mutable ECS service state
 
 ---
 
@@ -492,11 +447,6 @@ A successful recovery verification is not the same thing as promoting a new revi
 Deployment probe can promote.
 Rollback verification can only confirm recovery.
 
-Running-version note:
-- this rule is enforced by giving the probe workflow an explicit `update_pointers_on_success` input
-- normal deployment probe passes `true`
-- rollback verification passes `false`
-
 ---
 
 ## 9. Automatic Rollback Logic
@@ -579,10 +529,6 @@ The same health signal should be used for both purposes:
 - inspect exit code, stopped reason, container reason
 - collect logs
 
-Running-version note:
-- probe task definition preparation reuses the shared `ecs-prepare-task-definition` action
-- ECS task waiting/log extraction reuses the shared `ecs-wait-task-result` action
-
 ### 11.3 Probe differences by purpose
 
 #### Deployment probe
@@ -592,26 +538,6 @@ Running-version note:
 #### Rollback verification probe
 - must not update deployment pointers
 - writes rollback verification success/failure manifests
-
-### 11.4 Probe image resolution strategy
-
-The running design uses explicit probe image strategy rather than implicit defaults.
-
-Supported modes:
-
-- build-only
-- fetch-only
-- fetch-first with build fallback
-
-Current operating choice:
-
-- normal deploy probe: fetch-first with build fallback
-- rollback verification probe: fetch-only
-
-Reason:
-- the first probe run should be able to seed ECR automatically
-- later probe runs should reuse the already-published probe image when possible
-- rollback verification should be fast and should not mutate probe artifacts
 
 ---
 
@@ -628,11 +554,6 @@ Seeding should:
 - run as one-off task
 - capture logs and exit status
 - write success/failure manifests
-
-Running-version note:
-- seeding follows the same caller-owned image policy model as deploy and probe
-- the top-level workflow currently chooses build-only for seeding
-- the reusable seeding workflow accepts explicit `build_image` and `fetch_image` inputs so this can be changed without editing seeding internals
 
 ### 12.2 Failure policy
 
@@ -742,34 +663,6 @@ Must support:
 
 The current design places awsvpc-specific lookup inside the awsvpc execution action.
 
-Running-version note:
-- the awsvpc action is also responsible for constructing valid AWS CLI network JSON
-- JSON should be assembled structurally rather than by fragile shell string interpolation
-
-### 15.3 Execution flexibility principle
-
-The running design intentionally allows deploy, probe, and seeding flows to support all ECS runtime/network combinations that the target environment can support.
-
-Supported combinations:
-
-- `EC2 + non-awsvpc`
-- `EC2 + awsvpc`
-- `FARGATE + awsvpc`
-
-This is intentional for several reasons:
-
-- it removes artificial capability differences between deploy, probe, and seeding
-- it reflects ECS's real separation of launch type from network mode
-- it makes the reusable workflows more portable across projects and migration phases
-- it lets environments differ by configuration instead of by workflow rewrites
-
-Important design interpretation:
-
-- non-awsvpc execution belongs in the generic ECS run action
-- awsvpc execution belongs in the awsvpc-specific ECS run action
-- reusable workflows choose between those actions based on execution mode
-- top-level orchestration or environment configuration decides which mode is desired
-
 ---
 
 ## 16. Environment Configuration Model
@@ -791,22 +684,8 @@ Examples:
 - `SEEDER_SECURITY_GROUP_NAME`
 - `SEEDER_SUBNET_TAG_VALUES`
 - `SEEDER_ASSIGN_PUBLIC_IP`
-- `PROBE_NETWORK_MODE`
-- `PROBE_LAUNCH_TYPE`
-- `PROBE_SECURITY_GROUP_NAME`
-- `PROBE_SUBNET_TAG_VALUES`
-- `PROBE_ASSIGN_PUBLIC_IP`
 
 This lets dev and prod differ without requiring workflow edits.
-
-Critical running-version rule:
-- environment-scoped values must be resolved inside reusable workflow jobs that are bound with:
-
-```yaml
-environment: ${{ inputs.environment }}
-```
-
-- environment-scoped values should not be eagerly resolved in the top-level caller when that would risk prod jobs inheriting dev values
 
 ---
 
@@ -835,18 +714,6 @@ environment: ${{ inputs.environment }}
 ### 17.3 Action layer
 
 Cloud mechanics are encapsulated in `.github/actions/*`.
-
-### 17.4 Running behavior details
-
-The running GitHub Actions implementation now also includes:
-
-- caller-owned image strategy for deploy, probe, and seeding
-- environment-scoped variable resolution inside reusable workflows
-- fetch-first probe behavior with soft-missing ECR fetch
-- awsvpc-internal network lookup and JSON construction
-- shared ECS task-result waiting across probe and seeding
-- rollback verification as a distinct post-rollback probe stage
-- probe execution flexibility across EC2/Fargate and awsvpc/non-awsvpc modes
 
 ---
 
@@ -1066,102 +933,3 @@ This pipeline is built around a few core principles:
 - JSON should remain friendly to future programmatic consumers
 
 This specification should be treated as the canonical blueprint for implementing equivalent pipelines in other CI systems.
-
----
-
-## 25. Drift from the Original Specification
-
-The architecture did not drift because the original design was wrong at a high level. It drifted because real execution exposed where the original specification was too abstract or not strict enough at the operating boundary.
-
-### 25.1 Drift: image policy moved fully to the caller
-
-Original tendency:
-- some reusable workflows carried image-strategy defaults internally
-
-Current running design:
-- top-level orchestration explicitly passes `build_image` and `fetch_image`
-
-Why this drift happened:
-- hidden defaults made behavior harder to predict
-- different workflows were becoming inconsistent
-- rollout intent is easier to review when it is visible in one top-level file
-
-### 25.2 Drift: environment var resolution moved inward
-
-Original tendency:
-- environment-specific values could be passed from the caller
-
-Current running design:
-- reusable workflows resolve environment-scoped vars inside jobs bound to the target environment
-
-Why this drift happened:
-- prod jobs were able to accidentally inherit dev-scoped values when vars were resolved too early
-- multi-environment correctness mattered more than keeping the caller superficially thinner
-
-### 25.3 Drift: probe changed from build-oriented to fetch-first
-
-Original tendency:
-- probe could be described as just another build-and-run path
-
-Current running design:
-- normal probe is fetch-first with build fallback
-- rollback verification probe is fetch-only
-
-Why this drift happened:
-- rebuilding probe every time was redundant
-- only the first probe needs to seed ECR if the repository is empty
-- rollback verification should validate recovery, not recreate probe artifacts
-
-### 25.4 Drift: awsvpc lookup responsibility moved deeper into actions
-
-Original tendency:
-- workflows could own subnet/security-group lookup logic
-
-Current running design:
-- awsvpc lookup and network JSON assembly live inside the awsvpc execution action
-
-Why this drift happened:
-- awsvpc-specific plumbing was repeating across workflows
-- shell-built JSON was brittle and caused runtime AWS CLI failures
-- the action boundary became more honest once it owned the full awsvpc execution concern
-
-### 25.5 Drift: rollback verification became a first-class stage
-
-Original tendency:
-- rollback could be treated mainly as an ECS corrective update
-
-Current running design:
-- rollback is followed by explicit recovery verification probe
-
-Why this drift happened:
-- a successful rollback command does not prove a healthy recovered application
-- operational confidence required validating rollback, not merely performing it
-
-### 25.6 Drift: probe moved from Fargate-only assumption to full ECS execution flexibility
-
-Original tendency:
-- probe was implicitly treated as a Fargate + awsvpc-only operation
-
-Current running design:
-- probe can run as:
-  - `FARGATE + awsvpc`
-  - `EC2 + awsvpc`
-  - `EC2 + non-awsvpc`
-
-Why this drift happened:
-- seeding and deploy already had broader execution flexibility
-- probe should not be artificially less capable than the other execution workflows
-- future projects and environments may differ in runtime model
-- keeping the capability symmetric across jobs makes the architecture easier to reuse and reason about
-
-### 25.7 Interpretation of the drift
-
-These changes should be treated as specification refinement, not architecture drift in the negative sense.
-
-They show that the correct long-term design is:
-
-- stricter about policy ownership
-- stricter about environment scoping
-- more verification-heavy
-- less tolerant of hidden defaults
-- more honest about where cloud-specific complexity really belongs

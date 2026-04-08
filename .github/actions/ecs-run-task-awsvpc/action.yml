@@ -91,8 +91,6 @@ runs:
         if [ -z "$SECURITY_GROUP_ID" ]; then
           SECURITY_GROUP_ID="${{ steps.lookup-network.outputs.security_group_id }}"
         fi
-        echo "subnetidjson $SUBNET_IDS_JSON"
-        echo "security group $SECURITY_GROUP_ID "
 
         echo "subnet_ids_json=$SUBNET_IDS_JSON" >> "$GITHUB_OUTPUT"
         echo "security_group_id=$SECURITY_GROUP_ID" >> "$GITHUB_OUTPUT"

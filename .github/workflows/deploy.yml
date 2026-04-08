@@ -53,6 +53,22 @@ on:
         type: boolean
         required: true
         default: false
+      default_launch_type:
+        description: "Default launch type for jobs that support runtime overrides."
+        type: choice
+        required: true
+        default: EC2
+        options:
+          - EC2
+          - FARGATE
+      default_network_mode:
+        description: "Default network mode for jobs that support runtime overrides."
+        type: choice
+        required: true
+        default: non-awsvpc
+        options:
+          - non-awsvpc
+          - awsvpc
       rollback_component:
         description: "Component to roll back when action_type is rollback"
         type: choice
@@ -241,12 +257,14 @@ jobs:
       environment: ${{ matrix.environment }}
       component: ${{ matrix.component }}
       project_name: ${{ vars.PROJECT_NAME }}
-      # Default to non-awsvpc so existing environments keep working even before the new
-      # environment-scoped vars are populated. Environments can opt into awsvpc by setting vars.
-      service_network_mode: ${{ vars.SERVICE_NETWORK_MODE || 'non-awsvpc' }}
+      # Workflow-level defaults are explicit test controls now: callers can still override
+      # specific jobs later, but the dispatch contract always speaks in concrete ECS terms.
+      service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SERVICE_NETWORK_MODE }}
       security_group_name: ${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}
       subnet_tag_values: ${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}
       assign_public_ip: ${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}
+      # Caller-owned image policy keeps the reusable deploy workflow honest: it executes the
+      # requested strategy, while deploy.yml remains the single place where rollout intent lives.
       # Push events always build fresh images. Manual runs can choose per component whether
       # deploy should build a new image or reuse one that is already in ECR.
       build_image: ${{ github.event_name == 'push' || (matrix.component == 'frontend' && inputs.build_frontend) || (matrix.component == 'backend' && inputs.build_backend) }}
@@ -270,11 +288,13 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      # Probe should try to reuse the current ECR image first and only build if the
-      # repository is still empty. That keeps the first probe self-seeding and later
-      # probe runs faster and more deterministic.
+      # Probe image policy also stays caller-owned. Normal deploy validation uses a
+      # fetch-first strategy so the first probe can self-seed ECR and later probes
+      # reuse that image instead of rebuilding it every time.
       build_image: true
       fetch_image: true
+      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
+      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -295,6 +315,8 @@ jobs:
       environment: ${{ matrix.environment }}
       component: ${{ matrix.component }}
       project_name: ${{ vars.PROJECT_NAME }}
+      service_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
+      service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -315,8 +337,12 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
+      # Rollback verification should only validate recovery using the already-published
+      # probe image. Fetch-only keeps this path fast and avoids mutating probe artifacts.
       build_image: false
       fetch_image: true
+      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
+      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -334,6 +360,8 @@ jobs:
       environment: ${{ inputs.target_environment }}
       component: ${{ inputs.rollback_component }}
       project_name: ${{ vars.PROJECT_NAME }}
+      service_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
+      service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
       rollback_task_definition_arn: ${{ inputs.rollback_task_definition_arn }}
       rollback_manifest_s3_key: ${{ inputs.rollback_manifest_s3_key }}
     secrets: inherit
@@ -352,8 +380,11 @@ jobs:
     with:
       environment: ${{ inputs.target_environment }}
       project_name: ${{ vars.PROJECT_NAME }}
+      # Manual rollback recovery follows the same fetch-only probe rule as auto rollback.
       build_image: false
       fetch_image: true
+      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
+      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -376,7 +407,13 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      seeder_network_mode: ${{ vars.SEEDER_NETWORK_MODE || 'non-awsvpc' }}
+      # Seeder follows the same caller-owned image policy pattern as deploy and probe.
+      # Today we intentionally build the seeder fresh for manual runs, but the choice is
+      # visible here now and can be changed later without editing the reusable workflow.
+      build_image: true
+      fetch_image: false
+      seeder_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || vars.SEEDER_LAUNCH_TYPE  }}
+      seeder_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SEEDER_NETWORK_MODE }}
       seeder_security_group_name: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
       seeder_subnet_tag_values: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}
       seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || 'DISABLED' }}

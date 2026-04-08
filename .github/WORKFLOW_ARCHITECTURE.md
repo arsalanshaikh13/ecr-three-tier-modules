@@ -66,10 +66,9 @@ Reusable workflows now follow a tighter shared contract so the top-level orchest
 Common inputs across reusable workflows:
 - environment
 - project_name
-- env_var
-- `aws_region`
-- `aws_account_id`
-- manifest_bucket when the workflow persists deployment history
+- build_image / fetch_image when image policy is relevant
+- component when the workflow targets one deployable unit
+- manifest-related inputs only when the workflow persists deployment history
 
 Workflow-specific inputs are still allowed, but the shared cloud/runtime identity fields now use one naming convention everywhere. This keeps call sites easier to scan and makes reuse across other repositories less error-prone.
 
@@ -104,3 +103,23 @@ What stays workflow-level:
 - artifact coordination between jobs
 - success/failure branching and promotion decisions
 - operator-facing rollback resolution policy
+
+## Execution Flexibility
+
+The current architecture intentionally allows the main execution workflows to support all ECS runtime/network combinations that the target environment supports:
+
+- `EC2 + non-awsvpc`
+- `EC2 + awsvpc`
+- `FARGATE + awsvpc`
+
+Why we chose this:
+- it keeps deploy, probe, and seeding symmetric instead of giving one job artificial limitations
+- it reflects how ECS actually separates launch type from network mode
+- it makes the workflows reusable across environments that are not all on the same runtime model
+- it supports migration paths where one environment is still EC2 while another has moved to Fargate
+
+Boundary-wise, this means:
+- `.github/actions/ecs-run-task` owns non-awsvpc execution
+- `.github/actions/ecs-run-task-awsvpc` owns awsvpc execution, network lookup, and network JSON construction
+- reusable workflows decide which action to use
+- top-level orchestration or environment configuration decides which execution mode should apply

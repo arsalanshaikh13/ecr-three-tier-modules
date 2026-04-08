@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "testing fetch image in probe"
+git commit -m "added the option for default launch type and default network mode to switch between networks and launch type easily"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -57,7 +57,9 @@ if ! gh workflow run "deploy.yml" \
   -f get_frontend=true \
   -f build_backend=false \
   -f get_backend=true \
-  -f run_seeding=false; then
+  -f run_seeding=false \
+  -f default_network_mode=non-awsvpc \
+  -f default_launch_type=EC2; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
   exit 1
@@ -76,7 +78,9 @@ fi
 #       "get_frontend": "false",
 #       "build_backend": "true",
 #       "get_backend": "false",
-#       "run_seeding": "true"
+#       "run_seeding": "true".
+        # "default_network_mode": "non-awsvpc",
+        # "default_launch_type": "EC2"
 #     }
 #   }'
 
@@ -92,6 +96,9 @@ fi
 #       "promote_frontend": "true",
 #       "promote_backend": "true",
 #       "run_seeding_in_prod": "true"
+        # "default_network_mode": "non-awsvpc",
+        # "default_launch_type": "EC2"
+
 #     }
 #   }'
 # # Small delay to allow GitHub to register the new run in run list.

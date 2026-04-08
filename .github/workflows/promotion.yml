@@ -40,6 +40,22 @@ on:
         type: boolean
         required: true
         default: false
+      default_launch_type:
+        description: "Default launch type to pass into the triggered prod deploy workflow."
+        type: choice
+        required: true
+        default: EC2
+        options:
+          - EC2
+          - FARGATE
+      default_network_mode:
+        description: "Default network mode to pass into the triggered prod deploy workflow."
+        type: choice
+        required: true
+        default: non-awsvpc
+        options:
+          - non-awsvpc
+          - awsvpc
 
 permissions:
   id-token: write
@@ -270,11 +286,15 @@ jobs:
             -f get_frontend=${{ inputs.promote_frontend }} \
             -f build_backend=false \
             -f get_backend=${{ inputs.promote_backend }} \
-            -f run_seeding=${{ inputs.run_seeding_in_prod }}
+            -f run_seeding=${{ inputs.run_seeding_in_prod }} \
+            -f default_launch_type=${{ inputs.default_launch_type }} \
+            -f default_network_mode=${{ inputs.default_network_mode }}
 
           {
             echo "triggered_ref=${{ github.ref_name }}"
             echo "run_seeding=${{ inputs.run_seeding_in_prod }}"
+            echo "default_launch_type=${{ inputs.default_launch_type }}"
+            echo "default_network_mode=${{ inputs.default_network_mode }}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish promotion summary to job summary
@@ -289,6 +309,8 @@ jobs:
             echo "- get_frontend: \`${{ inputs.promote_frontend }}\`"
             echo "- get_backend: \`${{ inputs.promote_backend }}\`"
             echo "- run_seeding: \`${{ steps.trigger-deploy.outputs.run_seeding }}\`"
+            echo "- default_launch_type: \`${{ steps.trigger-deploy.outputs.default_launch_type }}\`"
+            echo "- default_network_mode: \`${{ steps.trigger-deploy.outputs.default_network_mode }}\`"
             echo
             echo "This promotion workflow copies the approved image into the prod-region ECR repository first."
             echo "The triggered deploy workflow then reuses its existing fetch-from-ECR path, which keeps deployment logic centralized in one place."
