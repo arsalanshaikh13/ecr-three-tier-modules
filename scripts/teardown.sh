@@ -1,165 +1,188 @@
 #!/bin/bash
 set -euo pipefail
+
 # ==========================================================
-# Configuration: Update these to match your environment
+# Safely drain ECS services before Terraform destroy so the
+# service-delete path does not spend unnecessary time waiting
+# on task and target-group draining.
 # ==========================================================
-# Guardrail: require an explicit environment so teardown never runs with an
-# empty value or the wrong target by accident.
+
 if [ -z "${1:-}" ]; then
-  echo "Usage: $0 <dev|prod>"
+  echo "Usage: $0 <dev|prod|all>"
   echo "Error: ENV argument is required."
   exit 1
 fi
 
-ENV="$1"
-cd root
-CLUSTER_NAME="lirw-ecs-cluster-$ENV"
-# Define your services as an array
-SERVICES=("backend-service" "frontend-service" )
-# ASG_NAME="ecs-asg-dev"
-ASG_NAMES=("lirw-ecs-asg-backend-$ENV" "lirw-ecs-asg-frontend-$ENV" )
-# REGION="us-east-1"
-if [ "$1" = "dev" ]; then
-  REGION="us-east-1"
-else
-  REGION="us-east-2"
-fi
- 
-echo "region: $REGION"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${SCRIPT_DIR}/../root"
+ENV_ARG="$1"
 
-echo "======================================================"
-echo " 🛑 Initiating Safe ECS Teardown Sequence..."
-echo "======================================================"
+SERVICES=("backend-service" "frontend-service")
+TARGET_GROUPS=("backend-internal-tg" "frontend-public-tg")
 
-# Step 1: Tell AWS to drain the tasks
-echo "1️⃣ Scaling services down to 0 tasks..."
-echo "Force-stopping running ECS tasks after desired count is set to 0..."
+run_teardown() {
+  local env_name="$1"
+  local region
+  local tfvars_file
+  local state_file
+  local cluster_name
 
-for SERVICE_NAME in "${SERVICES[@]}"; do
-  TASK_ARNS=$(aws ecs list-tasks \
-    --cluster "$CLUSTER_NAME" \
-    --service-name "$SERVICE_NAME" \
-    --desired-status RUNNING \
-    --region "$REGION" \
-    --query 'taskArns[]' \
-    --output text)
+  case "$env_name" in
+    dev)
+      region="us-east-1"
+      tfvars_file="tfvars/dev.tfvars"
+      state_file="./state/dev.tfstate"
+      ;;
+    prod)
+      region="us-east-2"
+      tfvars_file="tfvars/prod.tfvars"
+      state_file="./state/prod.tfstate"
+      ;;
+    *)
+      echo "Error: unsupported environment '$env_name'. Expected dev or prod."
+      exit 1
+      ;;
+  esac
 
-  if [ $? -ne 0 ]; then
-  echo "   ❌ Failed to update $SERVICE_NAME. Please check your AWS credentials and cluster name."
-  exit 1
-  fi
+  cluster_name="lirw-ecs-cluster-${env_name}"
 
+  echo "======================================================"
+  echo "Initiating safe ECS teardown for: $env_name"
+  echo "Cluster: $cluster_name"
+  echo "Region: $region"
+  echo "State: $state_file"
+  echo "======================================================"
 
-  if [ -n "$TASK_ARNS" ] && [ "$TASK_ARNS" != "None" ]; then
-    for TASK_ARN in $TASK_ARNS; do
-      echo "Stopping task: $TASK_ARN"
-      aws ecs stop-task \
-        --cluster "$CLUSTER_NAME" \
-        --task "$TASK_ARN" \
-        --reason "Pre-terraform teardown cleanup" \
-        --region "$REGION" >/dev/null
-    done
-  fi
-done
+  cd "$ROOT_DIR"
 
-# Step 2: Actively monitor the shutdown process
-echo "2️⃣ Waiting for all running tasks to terminate cleanly..."
-while true; do
-  ALL_SERVICES_DOWN=true
+  echo "1. Modifying target groups to drop connections immediately..."
+  for tg_name in "${TARGET_GROUPS[@]}"; do
+    echo "   Checking Target Group: $tg_name"
 
-  for SERVICE_NAME in "${SERVICES[@]}"; do
-    # Query AWS for the exact number of running tasks
-    RUNNING_TASKS=$(aws ecs describe-services \
-      --cluster "$CLUSTER_NAME" \
-      --services "$SERVICE_NAME" \
-      --region "$REGION" \
-      --query 'services[0].runningCount' \
-      --output text)
+    tg_arn=$(aws elbv2 describe-target-groups \
+      --names "$tg_name" \
+      --region "$region" \
+      --query 'TargetGroups[0].TargetGroupArn' \
+      --output text 2>/dev/null || true)
 
-    if [ "$RUNNING_TASKS" -gt 0 ]; then
-      echo "   ⏳ $SERVICE_NAME still has $RUNNING_TASKS task(s) running..."
-      ALL_SERVICES_DOWN=false
+    if [ -n "$tg_arn" ] && [ "$tg_arn" != "None" ]; then
+      aws elbv2 modify-target-group-attributes \
+        --target-group-arn "$tg_arn" \
+        --attributes Key=deregistration_delay.timeout_seconds,Value=0 \
+        --region "$region" >/dev/null
+      echo "      Deregistration delay set to 0."
+    else
+      echo "      Target group not found. Proceeding."
     fi
   done
 
-  # If all services reported 0 tasks, break the loop
-  if [ "$ALL_SERVICES_DOWN" = true ]; then
-    echo "✅ All ECS services have successfully scaled down to 0!"
-    break
-  fi
+  echo ""
+  echo "2. Scaling ECS services down to 0..."
+  for service_name in "${SERVICES[@]}"; do
+    echo "   Scaling $service_name"
+    if ! aws ecs update-service \
+      --cluster "$cluster_name" \
+      --service "$service_name" \
+      --desired-count 0 \
+      --region "$region" >/dev/null 2>&1; then
+      echo "      Failed to update $service_name. It may already be gone."
+    fi
+  done
 
-  echo "   💤 Waiting 10 seconds before checking again..."
-  sleep 10
-done
+  echo ""
+  echo "3. Force stopping any remaining ECS tasks..."
+  for service_name in "${SERVICES[@]}"; do
+    task_arns=$(aws ecs list-tasks \
+      --cluster "$cluster_name" \
+      --service-name "$service_name" \
+      --desired-status RUNNING \
+      --region "$region" \
+      --query 'taskArns[]' \
+      --output text 2>/dev/null || true)
 
+    if [ -n "$task_arns" ] && [ "$task_arns" != "None" ]; then
+      for task_arn in $task_arns; do
+        echo "   Stopping task for $service_name: $task_arn"
+        aws ecs stop-task \
+          --cluster "$cluster_name" \
+          --task "$task_arn" \
+          --reason "Pre-terraform teardown cleanup" \
+          --region "$region" >/dev/null 2>&1 || true
+      done
+    else
+      echo "   No running tasks found for $service_name"
+    fi
+  done
 
-# Step 3: Terminate the EC2 Instances
-# Step 3: Terminate the EC2 Instances for each ASG
-echo "3️⃣ Scaling Auto Scaling Groups to 0 instances..."
+  echo ""
+  echo "4. Waiting for running tasks to stop..."
+  while true; do
+    all_services_down=true
 
-for ASG_NAME in "${ASG_NAMES[@]}"; do
-  echo "--- Processing ASG: $ASG_NAME ---"
+    for service_name in "${SERVICES[@]}"; do
+      running_tasks=$(aws ecs describe-services \
+        --cluster "$cluster_name" \
+        --services "$service_name" \
+        --region "$region" \
+        --query 'services[0].runningCount' \
+        --output text 2>/dev/null || true)
 
-  # Scale the ASG to 0
-  aws autoscaling update-auto-scaling-group \
-    --auto-scaling-group-name "$ASG_NAME" \
-    --min-size 0 \
-    --max-size 0 \
-    --desired-capacity 0 \
-    --region "$REGION" > /dev/null
+      if [[ ! "$running_tasks" =~ ^[0-9]+$ ]]; then
+        running_tasks=0
+      fi
 
-  if [ $? -ne 0 ]; then
-    echo "  ⚠️ Failed to update $ASG_NAME. It may not exist."
-    continue # Skip to the next ASG in the array
-  else
-    echo "  ✅ $ASG_NAME scaled to 0."
-  fi
+      if [ "$running_tasks" -gt 0 ]; then
+        echo "   $service_name still has $running_tasks task(s) running..."
+        all_services_down=false
+      fi
+    done
 
-  # Extract Instance IDs for this specific ASG
-  INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
-    --auto-scaling-group-names "$ASG_NAME" \
-    --region "$REGION" \
-    --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
-    --output text)
+    if [ "$all_services_down" = true ]; then
+      echo "   All ECS tasks have stopped."
+      break
+    fi
 
-  if [ -n "$INSTANCE_IDS" ] && [ "$INSTANCE_IDS" != "None" ]; then
-    echo "  🔥 Target(s) acquired in $ASG_NAME: $INSTANCE_IDS"
-    
-    # Forcefully terminate the instances
-    aws ec2 terminate-instances \
-      --instance-ids $INSTANCE_IDS \
-      --region "$REGION" > /dev/null
-      
-    echo "  ⏳ Waiting for termination confirmation..."
-    aws ec2 wait instance-terminated \
-      --instance-ids $INSTANCE_IDS \
-      --region "$REGION"
-      
-    echo "  ✅ Instances in $ASG_NAME destroyed."
-  else
-    echo "  ✅ No running instances found in $ASG_NAME."
-  fi
-done
-# # Step 3: Trigger Terraform
-echo "======================================================"
-echo " 🌪️  Infrastructure is clear. Triggering Terraform... "
-echo "======================================================"
+    sleep 10
+  done
 
-# Destroy only the explicitly selected environment state so dev/prod remain isolated.
-case "$ENV" in
-  dev)
-    terraform destroy -var-file=tfvars/dev.tfvars -state=./state/dev.tfstate -parallelism=20 -auto-approve
+  echo ""
+  echo "5. Force deleting ECS services..."
+  for service_name in "${SERVICES[@]}"; do
+    echo "   Deleting $service_name"
+    aws ecs delete-service \
+      --cluster "$cluster_name" \
+      --service "$service_name" \
+      --region "$region" \
+      --force \
+      --no-cli-pager >/dev/null 2>&1 || true
+  done
+
+  echo ""
+  echo "6. Triggering Terraform destroy for $env_name..."
+  terraform destroy \
+    -var-file="$tfvars_file" \
+    -state="$state_file" \
+    -parallelism=20 \
+    -auto-approve
+
+  echo ""
+  echo "Completed teardown for $env_name."
+  echo "======================================================"
+}
+
+case "$ENV_ARG" in
+  dev|prod)
+    run_teardown "$ENV_ARG"
     ;;
-  prod)
-    terraform destroy -var-file=tfvars/prod.tfvars -state=./state/prod.tfstate -parallelism=20 -auto-approve
+  all)
+    # Run sequentially so each environment keeps its own cluster, region, tfvars,
+    # and state context instead of interleaving destroy operations.
+    run_teardown dev
+    run_teardown prod
     ;;
   *)
-    echo "Error: ENV must be one of: dev, prod"
+    echo "Usage: $0 <dev|prod|all>"
+    echo "Error: unsupported environment '$ENV_ARG'."
     exit 1
     ;;
 esac
-
-
-# terraform destroy -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
-# terraform apply -var-file=tfvars/dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
-terraform apply -var-file=tfvars/dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener

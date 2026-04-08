@@ -36,7 +36,7 @@ REPO_NAME="ecr-three-tier-modules"
 # git status
 git add .; 
 # git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "changed iam permission to allow ecr task to access ssm"
+git commit -m "changed updated teardown.sh for fargate"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -53,7 +53,7 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
   -f action_type=deploy \
-  -f target_environment=all \
+  -f target_environment=dev \
   -f build_frontend=true \
   -f get_frontend=false \
   -f build_backend=true \
