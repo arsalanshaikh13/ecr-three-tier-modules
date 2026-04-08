@@ -260,9 +260,9 @@ jobs:
       # Workflow-level defaults are explicit test controls now: callers can still override
       # specific jobs later, but the dispatch contract always speaks in concrete ECS terms.
       service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SERVICE_NETWORK_MODE }}
-      subnet_tag_values: ${{ vars.SERVICE_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}
-      security_group_name: ${{ vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-backend-sg-{0}', vars.ENV_VAR) }}
-      assign_public_ip: ${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'ENABLED' }}
+      subnet_tag_values: ${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}
+      security_group_name: ${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}
+      assign_public_ip: ${{ vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
       # Caller-owned image policy keeps the reusable deploy workflow honest: it executes the
       # requested strategy, while deploy.yml remains the single place where rollout intent lives.
       # Push events always build fresh images. Manual runs can choose per component whether
@@ -419,7 +419,7 @@ jobs:
       fetch_image: false
       seeder_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || vars.SEEDER_LAUNCH_TYPE  }}
       seeder_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SEEDER_NETWORK_MODE }}
-      seeder_security_group_name: ${{ vars.SEEDER_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}
-      seeder_subnet_tag_values: ${{ vars.SEEDER_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}
-      seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || 'ENABLED' }}
+      seeder_security_group_name: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}
+      seeder_subnet_tag_values: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
+      seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || '' }}
     secrets: inherit
