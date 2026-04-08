@@ -106,7 +106,7 @@ jobs:
 
       - name: Prepare task definition up to registration
         id: prepare-task-def
-        uses: ./.github/actions/ecs-prepare-task-definition
+        uses: ./.github/actions/ecs-prepare-task-definitio
         with:
           workdir: lirw-three-tier/${{ inputs.component }}
           ecr_repository: ${{ inputs.project_name }}-${{ inputs.component }}-repo-${{ vars.ENV_VAR }}
