@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "testing auto-rollback"
+git commit -m "testing manual-rollback"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -51,7 +51,7 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # has an older workflow definition registered by GitHub.
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
-  -f action_type=deploy \
+  -f action_type=rollback \
   -f target_environment=dev \
   -f build_frontend=true \
   -f get_frontend=false \

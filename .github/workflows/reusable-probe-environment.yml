@@ -11,6 +11,16 @@ on:
         description: "Project name prefix used in ECS/ECR/SSM/S3 naming."
         required: true
         type: string
+      build_image:
+        description: "Whether the probe workflow should build and push a fresh probe image."
+        required: false
+        type: boolean
+        default: true
+      fetch_image:
+        description: "Whether the probe workflow should fetch the existing probe image from ECR."
+        required: false
+        type: boolean
+        default: false
       update_pointers_on_success:
         description: "Whether a successful probe should advance deployment pointers in SSM."
         required: false
@@ -76,8 +86,10 @@ jobs:
           ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ vars.ENV_VAR }}
           image_tag: ${{ github.sha }}
           additional_tag: latest
-          build_image: true
-          fetch_image: false
+          # Normal deployment validation can build the probe image, but rollback verification
+          # can safely reuse the probe image that was already pushed earlier in the workflow.
+          build_image: ${{ inputs.build_image }}
+          fetch_image: ${{ inputs.fetch_image }}
           task_definition_name: ${{ inputs.project_name }}-probe-${{ vars.ENV_VAR }}
           task_definition_output_path: task-definition-probe-${{ vars.ENV_VAR }}.json
           # Probe uses its own standalone task family and container name, but the shared action

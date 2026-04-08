@@ -270,6 +270,8 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
+      build_image: true
+      fetch_image: false
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -310,6 +312,8 @@ jobs:
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
+      build_image: false
+      fetch_image: true
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -345,6 +349,8 @@ jobs:
     with:
       environment: ${{ inputs.target_environment }}
       project_name: ${{ vars.PROJECT_NAME }}
+      build_image: false
+      fetch_image: true
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
