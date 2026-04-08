@@ -173,7 +173,7 @@ runs:
             fi
 
             NETWORK_CONFIGURATION=$(jq -cn \
-              --argjson subnets '${{ steps.resolve-network.outputs.subnet_ids_json }}' \
+              --arg subnets '${{ steps.resolve-network.outputs.subnet_ids_json }}' \
               --arg security_group '${{ steps.resolve-network.outputs.security_group_id }}' \
               --arg assign_public_ip '${{ steps.resolve-network.outputs.assign_public_ip }}' \
               '{
