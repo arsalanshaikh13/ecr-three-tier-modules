@@ -52,24 +52,24 @@ fi
 echo "Hosted zone ID: $ZONE_ID"
 
 # echo "2. Importing RDS subnet group first in case it was created before the instance..."
-# terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE"  \
+# terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE" \
 #   'module.rds.aws_db_subnet_group.main' \
 #   'rds-subnet-group-prod' || true
 
-echo "3. Importing RDS instance..."
-terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE" \
-  'module.rds.aws_db_instance.mysql_db' \
-  'lirw-ecs-db-prod'
+# echo "3. Importing RDS instance..."
+# terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE" \
+#   'module.rds.aws_db_instance.mysql_db' \
+#   'lirw-ecs-db-prod'
 
-echo "4. Importing frontend Route53 alias record..."
+echo "4. Importing environment Route53 alias record (prod.devsandbox.space)..."
 terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE" \
   'module.route53.aws_route53_record.env_alias' \
   "${ZONE_ID}_prod.devsandbox.space_A"
 
-echo "5. Importing API Route53 alias record..."
-terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE" \
-  'module.route53.aws_route53_record.api_alias' \
-  "${ZONE_ID}_api-prod.devsandbox.space_A"
+# echo "5. Importing API Route53 alias record..."
+# terraform import -var-file=tfvars/prod.tfvars -state="$STATE_FILE" \
+#   'module.route53.aws_route53_record.api_alias' \
+#   "${ZONE_ID}_api-prod.devsandbox.space_A"
 
 echo "6. Current imported resources in prod state:"
 terraform state list -state="$STATE_FILE"
