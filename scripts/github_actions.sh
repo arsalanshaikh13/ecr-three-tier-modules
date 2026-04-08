@@ -34,7 +34,7 @@ REPO_NAME="ecr-three-tier-modules"
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 git add .; 
-git commit -m "removed double quotes around SUBNET_ID_JSON in ecs-run-task-awsvpc action"
+git commit -m "changed argjson to arg for SUBNET_ID_JSON in ecs-run-task-awsvpc action"
 git push  ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
