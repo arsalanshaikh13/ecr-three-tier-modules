@@ -172,23 +172,11 @@ runs:
               exit 1
             fi
 
-            NETWORK_CONFIGURATION=$(jq -cn \
-              --arg subnets '${{ steps.resolve-network.outputs.subnet_ids_json }}' \
-              --arg security_group '${{ steps.resolve-network.outputs.security_group_id }}' \
-              --arg assign_public_ip '${{ steps.resolve-network.outputs.assign_public_ip }}' \
-              '{
-                awsvpcConfiguration: {
-                  subnets: $subnets,
-                  securityGroups: [$security_group],
-                  assignPublicIp: $assign_public_ip
-                }
-              }')
-
             TASK_ARN=$(aws ecs run-task \
               --cluster "${{ inputs.cluster }}" \
               --task-definition "${{ inputs.task_definition }}" \
               --launch-type "${{ inputs.launch_type }}" \
-              --network-configuration "$NETWORK_CONFIGURATION" \
+              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ inputs.subnet_ids_json }},"securityGroups":["${{ inputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
               --query "tasks[0].taskArn" \
               --output text)
 
