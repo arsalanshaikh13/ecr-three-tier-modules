@@ -1,0 +1,128 @@
+name: ECS Prepare Task Definition
+description: Log in to ECR, resolve an image, download the current ECS task definition, render it, and register a new revision.
+
+inputs:
+  workdir:
+    description: Directory containing the Docker build context when build_image is true.
+    required: false
+  dockerfile:
+    description: Optional Dockerfile path relative to the build context.
+    required: false
+  ecr_repository:
+    description: ECR repository name used for image build or fetch.
+    required: true
+  image_tag:
+    description: Tag to apply when building a fresh image.
+    required: false
+    default: latest
+  additional_tag:
+    description: Optional additional image tag such as latest or seeder-latest.
+    required: false
+  build_image:
+    description: Whether to build and push a fresh image before registering the task definition.
+    required: true
+  fetch_image:
+    description: Whether to fetch the latest existing image from ECR instead of building one.
+    required: true
+  task_definition_name:
+    description: ECS task definition family/name to download before rendering a new revision.
+    required: true
+  task_definition_output_path:
+    description: Local path where the downloaded task definition JSON should be written.
+    required: true
+  container_name:
+    description: Container name inside the ECS task definition that should receive the resolved image.
+    required: true
+
+outputs:
+  image:
+    description: Resolved image URI used in the rendered task definition.
+    value: ${{ steps.resolve-image.outputs.image }}
+  current_task_definition_arn:
+    description: ARN of the currently downloaded task definition revision.
+    value: ${{ steps.current-task-def.outputs.task_definition_arn }}
+  task_definition_arn:
+    description: ARN of the newly registered task definition revision.
+    value: ${{ steps.register-task-def.outputs.task_definition_arn }}
+  task_definition_file:
+    description: Path to the rendered task definition JSON file produced by the render step.
+    value: ${{ steps.task-def.outputs.task-definition }}
+
+runs:
+  using: composite
+  steps:
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # The shared preparation action owns the entire pre-registration flow so deploy, probe,
+    # and seeding jobs can reuse one implementation instead of duplicating the same steps.
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      if: ${{ inputs.build_image == 'true' }}
+      uses: ./.github/actions/ecs-build-push-image
+      with:
+        workdir: ${{ inputs.workdir }}
+        dockerfile: ${{ inputs.dockerfile }}
+        ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+        ecr_repository: ${{ inputs.ecr_repository }}
+        image_tag: ${{ inputs.image_tag }}
+        additional_tag: ${{ inputs.additional_tag }}
+
+    - name: Determine Image URI (Fetch from ECR)
+      id: determine-image
+      if: ${{ inputs.build_image != 'true' && inputs.fetch_image == 'true' }}
+      uses: ./.github/actions/ecr-fetch-image
+      with:
+        ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+        ecr_repository: ${{ inputs.ecr_repository }}
+
+    - name: Validate image source was resolved
+      id: resolve-image
+      shell: bash
+      run: |
+        IMAGE_URI="${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}"
+
+        # Fail clearly if the caller forgot to choose either build or fetch. This keeps the
+        # reusable action honest and prevents silent task-definition registration with no image.
+        if [ -z "$IMAGE_URI" ]; then
+          echo "Error: no image URI was resolved for repository '${{ inputs.ecr_repository }}'."
+          exit 1
+        fi
+
+        echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+    - name: Download current ECS task definition
+      id: current-task-def
+      uses: ./.github/actions/ecs-download-task-definition
+      with:
+        task_definition_name: ${{ inputs.task_definition_name }}
+        output_path: ${{ inputs.task_definition_output_path }}
+
+    - name: Log current task definition ARN
+      shell: bash
+      run: |
+        # The shared download action returns both the JSON file for rendering and the previous
+        # ARN for rollback/manifests, so every caller gets the same state contract for free.
+        echo "Current task definition ARN: ${{ steps.current-task-def.outputs.task_definition_arn }}"
+
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ inputs.task_definition_output_path }}
+        container-name: ${{ inputs.container_name }}
+        image: ${{ steps.resolve-image.outputs.image }}
+
+    - name: Register new task definition
+      id: register-task-def
+      shell: bash
+      run: |
+        NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text)
+
+        # Every caller needs the newly registered ARN, but what they do next differs:
+        # deploy updates a service, probe runs a one-off task, and seeding runs a batch task.
+        echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"

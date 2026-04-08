@@ -1,0 +1,168 @@
+name: Reusable Auto Rollback
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name used for vars, approvals, and deployment targeting."
+        required: true
+        type: string
+      component:
+        description: "Application component being rolled back, for example frontend or backend."
+        required: true
+        type: string
+      project_name:
+        description: "Project name prefix used in ECS/SSM/S3 naming."
+        required: true
+        type: string
+      env_var:
+        description: "Short environment suffix used in AWS resource names, for example dev or prod."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the target environment."
+        required: true
+        type: string
+      aws_account_id:
+        description: "AWS account id used to construct the OIDC role ARN."
+        required: true
+        type: string
+      manifest_bucket:
+        description: "S3 bucket used to persist deployment manifests."
+        required: true
+        type: string
+    outputs:
+      environment:
+        description: "Environment that was rolled back."
+        value: ${{ jobs.rollback-service.outputs.environment }}
+      component:
+        description: "Component that was rolled back."
+        value: ${{ jobs.rollback-service.outputs.component }}
+      rollback_target_task_definition_arn:
+        description: "Task definition ARN restored during automatic rollback."
+        value: ${{ jobs.rollback-service.outputs.rollback_target_task_definition_arn }}
+      rollback_reason:
+        description: "Human-readable rollback reason recorded in the manifest."
+        value: ${{ jobs.rollback-service.outputs.rollback_reason }}
+      manifest_artifact_name:
+        description: "Artifact name containing automatic rollback manifests."
+        value: ${{ jobs.rollback-service.outputs.manifest_artifact_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback-service:
+    name: Roll Back ${{ inputs.component }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ inputs.environment }}
+      component: ${{ inputs.component }}
+      rollback_target_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+      rollback_reason: Automatic rollback completed using the last-known-good SSM pointer after probe failure.
+      manifest_artifact_name: rollback-manifests-${{ inputs.component }}-${{ inputs.environment }}
+    # Keep rollback attached to the target environment so approvals, environment-scoped vars,
+    # and logs all stay grouped under the same deployment surface as the original rollout.
+    environment: ${{ inputs.environment }}
+    env:
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Download deployment metadata artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}
+          path: deploy-metadata
+
+      - name: Read rollback metadata
+        id: rollback-metadata
+        shell: bash
+        run: |
+          METADATA_FILE="deploy-metadata/deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json"
+
+          # Deployment metadata remains the shared contract between deploy, probe, and rollback:
+          # it tells rollback which service was targeted and which revision failed.
+          echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "attempted_task_definition_arn=$(jq -r '.newTaskDefinitionArn // .new_task_definition_arn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Read last-known-good rollback pointer
+        id: rollback-pointer
+        uses: ./.github/actions/deployment-pointer-read
+        with:
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+
+      - name: Validate rollback target exists
+        shell: bash
+        run: |
+          if [ -z "${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}" ]; then
+            echo "Error: No last-known-good task definition ARN found in SSM for ${{ inputs.component }} (${{ inputs.environment }})."
+            exit 1
+          fi
+
+      - name: Roll back ECS service
+        uses: ./.github/actions/ecs-rollback-service
+        with:
+          cluster: ${{ steps.rollback-metadata.outputs.cluster }}
+          service: ${{ steps.rollback-metadata.outputs.service }}
+          task_definition: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+
+      # - name: Wait for rollback stability
+      #   uses: ./.github/actions/ecs-wait-service-stable
+      #   with:
+      #     cluster: ${{ steps.rollback-metadata.outputs.cluster }}
+      #     service: ${{ steps.rollback-metadata.outputs.service }}
+
+      - name: Reset deployment pointers after rollback
+        uses: ./.github/actions/deployment-pointer-write
+        with:
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+          current_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          last_known_good_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+
+      - name: Capture rollback timestamp
+        id: rollback-timestamp
+        shell: bash
+        run: |
+          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Persist rollback state and manifest
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/rollback
+          bucket: ${{ inputs.manifest_bucket }}
+          bucket_prefix: ${{ inputs.project_name }}/deployments/${{ inputs.environment }}/${{ inputs.component }}/rollback
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+          cluster: ${{ steps.rollback-metadata.outputs.cluster }}
+          service: ${{ steps.rollback-metadata.outputs.service }}
+          task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.rollback-metadata.outputs.attempted_task_definition_arn }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.rollback-timestamp.outputs.value }}
+          status: rolled_back
+          reason: Rollback completed using the last-known-good SSM pointer after probe failure.
+
+      - name: Upload rollback manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-manifests-${{ inputs.component }}-${{ inputs.environment }}
+          path: manifests/rollback
+          if-no-files-found: error

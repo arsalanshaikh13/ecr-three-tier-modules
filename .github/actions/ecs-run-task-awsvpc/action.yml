@@ -1,55 +1,154 @@
 name: ECS Run Task Awsvpc
-description: Run an ECS task with awsvpc network configuration, typically for Fargate or awsvpc-mode ECS tasks.
+description: Run an ECS task with awsvpc network configuration, typically for Fargate or awsvpc-mode ECS tasks, or update an ECS service that already owns awsvpc networking.
 
 inputs:
+  run_mode:
+    description: Whether to start a one-off task or update an ECS service. Valid values are task or service.
+    required: false
+    default: task
   cluster:
     description: ECS cluster name or ARN.
     required: true
   task_definition:
-    description: Task definition ARN or family:revision to run.
+    description: Task definition ARN or family:revision to run or attach to a service.
     required: true
+  service:
+    description: ECS service name when run_mode is service.
+    required: false
   launch_type:
     description: Launch type for the task, typically FARGATE for awsvpc probe tasks.
     required: false
     default: FARGATE
   subnet_ids_json:
     description: Compact JSON array of subnet IDs, for example [\"subnet-1\",\"subnet-2\"].
-    required: true
+    required: false
   security_group_id:
     description: Security group ID to attach to the task ENI.
-    required: true
+    required: false
+  security_group_name:
+    description: Optional security group name to resolve when direct IDs are not provided.
+    required: false
+  subnet_tag_values:
+    description: Optional comma-separated subnet Name tag values to resolve when direct IDs are not provided.
+    required: false
   assign_public_ip:
     description: Whether to assign a public IP. Valid values are ENABLED or DISABLED.
     required: false
     default: DISABLED
+  force_new_deployment:
+    description: Whether service mode should force a new deployment after updating the service.
+    required: false
+    default: true
 
 outputs:
   task_arn:
-    description: ARN of the started ECS task.
-    value: ${{ steps.run_task.outputs.task_arn }}
+    description: ARN of the started ECS task when run_mode is task.
+    value: ${{ steps.run_or_update.outputs.task_arn }}
+  service:
+    description: ECS service name when run_mode is service.
+    value: ${{ steps.run_or_update.outputs.service }}
+  subnet_ids_json:
+    description: Resolved subnet IDs in compact JSON form.
+    value: ${{ steps.resolve-network.outputs.subnet_ids_json }}
+  security_group_id:
+    description: Resolved security group id.
+    value: ${{ steps.resolve-network.outputs.security_group_id }}
 
 runs:
   using: composite
   steps:
-    - id: run_task
+    - name: Resolve awsvpc network ids when names/tags are provided
+      id: lookup-network
+      if: ${{ inputs.security_group_name != '' && inputs.subnet_tag_values != '' }}
+      uses: ./.github/actions/aws-fetch-network-ids
+      with:
+        security_group_name: ${{ inputs.security_group_name }}
+        subnet_tag_values: ${{ inputs.subnet_tag_values }}
+
+    - id: resolve-network
+      shell: bash
+      run: |
+        # Callers can either pass concrete IDs directly or let this action resolve them from
+        # the awsvpc-specific lookup inputs. Keeping both paths makes the action reusable across
+        # tightly controlled workflows and more generic callers.
+        SUBNET_IDS_JSON="${{ inputs.subnet_ids_json }}"
+        SECURITY_GROUP_ID="${{ inputs.security_group_id }}"
+
+        if [ -z "$SUBNET_IDS_JSON" ]; then
+          SUBNET_IDS_JSON="${{ steps.lookup-network.outputs.subnet_ids_json }}"
+        fi
+
+        if [ -z "$SECURITY_GROUP_ID" ]; then
+          SECURITY_GROUP_ID="${{ steps.lookup-network.outputs.security_group_id }}"
+        fi
+
+        echo "subnet_ids_json=$SUBNET_IDS_JSON" >> "$GITHUB_OUTPUT"
+        echo "security_group_id=$SECURITY_GROUP_ID" >> "$GITHUB_OUTPUT"
+
+    - id: run_or_update
       shell: bash
       run: |
         set -euo pipefail
 
-        # Use this action when the task definition expects awsvpc networking,
-        # such as the probe task that runs in private subnets with its own ENI.
-        # awsvpc tasks need explicit subnets and security groups because the task gets its own ENI.
-        TASK_ARN=$(aws ecs run-task \
-          --cluster "${{ inputs.cluster }}" \
-          --task-definition "${{ inputs.task_definition }}" \
-          --launch-type "${{ inputs.launch_type }}" \
-          --network-configuration '{"awsvpcConfiguration":{"subnets":${{ inputs.subnet_ids_json }},"securityGroups":["${{ inputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
-          --query "tasks[0].taskArn" \
-          --output text)
+        case "${{ inputs.run_mode }}" in
+          service)
+            # In service mode, awsvpc services may still need their network configuration updated
+            # alongside the task definition. Keep the network block optional so callers can either
+            # swap only the revision or also restate the awsvpc settings explicitly.
+            if [ -z "${{ inputs.service }}" ]; then
+              echo "Error: service input is required when run_mode is service."
+              exit 1
+            fi
 
-        if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
-          echo "Error: ECS run-task with awsvpc did not return a task ARN."
-          exit 1
-        fi
+            UPDATE_ARGS=(
+              --cluster "${{ inputs.cluster }}"
+              --service "${{ inputs.service }}"
+              --task-definition "${{ inputs.task_definition }}"
+            )
 
-        echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+            if [ "${{ inputs.force_new_deployment }}" = "true" ]; then
+              UPDATE_ARGS+=(--force-new-deployment)
+            fi
+
+            if [ -n "${{ steps.resolve-network.outputs.subnet_ids_json }}" ] && [ -n "${{ steps.resolve-network.outputs.security_group_id }}" ]; then
+              UPDATE_ARGS+=(
+                --network-configuration
+                '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":["${{ steps.resolve-network.outputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}'
+              )
+            fi
+
+            aws ecs update-service "${UPDATE_ARGS[@]}" >/dev/null
+            echo "service=${{ inputs.service }}" >> "$GITHUB_OUTPUT"
+            echo "task_arn=" >> "$GITHUB_OUTPUT"
+            ;;
+
+          task)
+            # Use task mode when the task definition expects awsvpc networking, such as the probe
+            # task that runs in private subnets with its own ENI.
+            if [ -z "${{ steps.resolve-network.outputs.subnet_ids_json }}" ] || [ -z "${{ steps.resolve-network.outputs.security_group_id }}" ]; then
+              echo "Error: awsvpc task mode requires subnet/security-group IDs directly or lookup inputs via security_group_name and subnet_tag_values."
+              exit 1
+            fi
+
+            TASK_ARN=$(aws ecs run-task \
+              --cluster "${{ inputs.cluster }}" \
+              --task-definition "${{ inputs.task_definition }}" \
+              --launch-type "${{ inputs.launch_type }}" \
+              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":["${{ steps.resolve-network.outputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
+              --query "tasks[0].taskArn" \
+              --output text)
+
+            if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+              echo "Error: ECS run-task with awsvpc did not return a task ARN."
+              exit 1
+            fi
+
+            echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+            echo "service=" >> "$GITHUB_OUTPUT"
+            ;;
+
+          *)
+            echo "Error: unsupported run_mode '${{ inputs.run_mode }}'. Expected 'task' or 'service'."
+            exit 1
+            ;;
+        esac

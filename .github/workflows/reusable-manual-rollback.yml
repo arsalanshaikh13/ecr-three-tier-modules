@@ -1,0 +1,213 @@
+name: Reusable Manual Rollback
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name used for vars, approvals, and deployment targeting."
+        required: true
+        type: string
+      component:
+        description: "Application component being rolled back, for example frontend or backend."
+        required: true
+        type: string
+      project_name:
+        description: "Project name prefix used in ECS/SSM/S3 naming."
+        required: true
+        type: string
+      env_var:
+        description: "Short environment suffix used in AWS resource names, for example dev or prod."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the target environment."
+        required: true
+        type: string
+      aws_account_id:
+        description: "AWS account id used to construct the OIDC role ARN."
+        required: true
+        type: string
+      manifest_bucket:
+        description: "S3 bucket used to persist deployment manifests."
+        required: true
+        type: string
+      rollback_task_definition_arn:
+        description: "Optional explicit task definition ARN for manual rollback."
+        required: false
+        type: string
+      rollback_manifest_s3_key:
+        description: "Optional S3 manifest key whose task_definition_arn should be used for rollback."
+        required: false
+        type: string
+    outputs:
+      environment:
+        description: "Environment that was manually rolled back."
+        value: ${{ jobs.manual-rollback.outputs.environment }}
+      component:
+        description: "Component that was manually rolled back."
+        value: ${{ jobs.manual-rollback.outputs.component }}
+      rollback_target_task_definition_arn:
+        description: "Final rollback target ARN chosen after applying the resolution order."
+        value: ${{ jobs.manual-rollback.outputs.rollback_target_task_definition_arn }}
+      rollback_reason:
+        description: "Reason explaining how the manual rollback target was chosen."
+        value: ${{ jobs.manual-rollback.outputs.rollback_reason }}
+      manifest_artifact_name:
+        description: "Artifact name containing manual rollback manifests."
+        value: ${{ jobs.manual-rollback.outputs.manifest_artifact_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  manual-rollback:
+    name: Manual Roll Back ${{ inputs.component }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ inputs.environment }}
+      component: ${{ inputs.component }}
+      rollback_target_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+      rollback_reason: ${{ steps.manual-rollback-target.outputs.reason }}
+      manifest_artifact_name: manual-rollback-manifests-${{ inputs.component }}-${{ inputs.environment }}
+    # Keep manual rollback attached to the selected environment so approvals, vars, and logs
+    # all stay scoped to the exact recovery surface the operator chose.
+    environment: ${{ inputs.environment }}
+    env:
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Capture current service state before manual rollback
+        id: current-service-state
+        shell: bash
+        run: |
+          CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ inputs.component }}-service" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "current_task_definition_arn=$CURRENT_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve manual rollback target
+        id: resolve-rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Resolution order mirrors standard production rollback practice:
+          # explicit ARN > manifest history > trusted SSM pointer.
+          if [ -n "${{ inputs.rollback_task_definition_arn }}" ]; then
+            echo "task_definition_arn=${{ inputs.rollback_task_definition_arn }}" >> "$GITHUB_OUTPUT"
+            echo "reason=Manual rollback used the explicitly provided task definition ARN." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "${{ inputs.rollback_manifest_s3_key }}" ]; then
+            aws s3 cp "s3://${{ inputs.manifest_bucket }}/${{ inputs.rollback_manifest_s3_key }}" rollback-manifest-source.json >/dev/null
+            MANIFEST_TASK_DEF_ARN=$(jq -r '.taskDefinitionArn // .task_definition_arn' rollback-manifest-source.json)
+
+            if [ -z "$MANIFEST_TASK_DEF_ARN" ] || [ "$MANIFEST_TASK_DEF_ARN" = "null" ]; then
+              echo "Error: manifest did not contain a taskDefinitionArn."
+              exit 1
+            fi
+
+            echo "task_definition_arn=$MANIFEST_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+            echo "reason=Manual rollback used the task definition ARN recorded in the selected deployment manifest." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "task_definition_arn=" >> "$GITHUB_OUTPUT"
+
+      - name: Read last-known-good rollback pointer
+        id: manual-rollback-pointer
+        if: ${{ steps.resolve-rollback.outputs.task_definition_arn == '' }}
+        uses: ./.github/actions/deployment-pointer-read
+        with:
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+
+      - name: Choose final manual rollback target
+        id: manual-rollback-target
+        shell: bash
+        run: |
+          TARGET_ARN="${{ steps.resolve-rollback.outputs.task_definition_arn }}"
+          TARGET_REASON="${{ steps.resolve-rollback.outputs.reason }}"
+
+          if [ -z "$TARGET_ARN" ]; then
+            TARGET_ARN="${{ steps.manual-rollback-pointer.outputs.last_known_good_task_definition_arn }}"
+            TARGET_REASON="Manual rollback defaulted to the trusted SSM last-known-good pointer."
+          fi
+
+          if [ -z "$TARGET_ARN" ]; then
+            echo "Error: no rollback target could be resolved."
+            exit 1
+          fi
+
+          echo "task_definition_arn=$TARGET_ARN" >> "$GITHUB_OUTPUT"
+          echo "reason=$TARGET_REASON" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back ECS service
+        uses: ./.github/actions/ecs-rollback-service
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.component }}-service
+          task_definition: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+
+      # - name: Wait for rollback stability
+      #   uses: ./.github/actions/ecs-wait-service-stable
+      #   with:
+      #     cluster: ${{ env.ECS_CLUSTER }}
+      #     service: ${{ inputs.component }}-service
+
+      - name: Reset deployment pointers after manual rollback
+        uses: ./.github/actions/deployment-pointer-write
+        with:
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+          current_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+          last_known_good_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+
+      - name: Capture manual rollback timestamp
+        id: manual-rollback-timestamp
+        shell: bash
+        run: |
+          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Persist manual rollback manifest
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/manual-rollback
+          bucket: ${{ inputs.manifest_bucket }}
+          bucket_prefix: ${{ inputs.project_name }}/deployments/${{ inputs.environment }}/${{ inputs.component }}/rollback
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.component }}-service
+          task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.current-service-state.outputs.current_task_definition_arn }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.manual-rollback-timestamp.outputs.value }}
+          status: rolled_back
+          reason: ${{ steps.manual-rollback-target.outputs.reason }}
+
+      - name: Upload manual rollback manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-rollback-manifests-${{ inputs.component }}-${{ inputs.environment }}
+          path: manifests/manual-rollback
+          if-no-files-found: error

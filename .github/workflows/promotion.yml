@@ -135,7 +135,7 @@ jobs:
             aws s3 cp "s3://$BUCKET/$manifest_key" "promotion-manifests/${component}-source-manifest.json" >/dev/null
 
             local source_image_uri
-            source_image_uri=$(jq -r '.imageUri' "promotion-manifests/${component}-source-manifest.json")
+            source_image_uri=$(jq -r '.imageUri // .image_uri' "promotion-manifests/${component}-source-manifest.json")
 
             if [ -z "$source_image_uri" ] || [ "$source_image_uri" = "null" ]; then
               echo "Error: manifest $manifest_key does not contain imageUri."
@@ -200,27 +200,27 @@ jobs:
             docker rmi "$source_image_uri" "$destination_image_uri" || true
 
           jq -n \
-            --arg project        "$PROJECT" \
-            --arg sourceEnv      "$SOURCE_ENV" \
-            --arg sourceManifest "$manifest_key" \
-            --arg sourceImage    "$source_image_uri" \
-            --arg promotedImage  "$destination_image_uri" \
-            --arg sourceRegion   "$SOURCE_REGION" \
-            --arg targetRegion   "$DESTINATION_REGION" \
-            --arg promotedBy     "arsalanshaikh13" \
-            --arg promotedAt     "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg project            "$PROJECT" \
+            --arg sourceEnvironment  "$SOURCE_ENV" \
+            --arg sourceManifestKey  "$manifest_key" \
+            --arg sourceImageUri     "$source_image_uri" \
+            --arg promotedImageUri   "$destination_image_uri" \
+            --arg sourceRegion       "$SOURCE_REGION" \
+            --arg targetRegion       "$DESTINATION_REGION" \
+            --arg promotedBy         "arsalanshaikh13" \
+            --arg promotedAt         "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
             '{
-              project:           $project,
-              sourceEnvironment: $sourceEnv,
+              project: $project,
+              sourceEnvironment: $sourceEnvironment,
               targetEnvironment: "prod",
-              component:         "'"$component"'",
-              sourceManifestKey: $sourceManifest,
-              sourceImageUri:    $sourceImage,
-              promotedImageUri:  $promotedImage,
-              sourceRegion:      $sourceRegion,
-              targetRegion:      $targetRegion,
-              promotedBy:        $promotedBy,
-              promotedAt:        $promotedAt
+              component: "'"$component"'",
+              sourceManifestKey: $sourceManifestKey,
+              sourceImageUri: $sourceImageUri,
+              promotedImageUri: $promotedImageUri,
+              sourceRegion: $sourceRegion,
+              targetRegion: $targetRegion,
+              promotedBy: $promotedBy,
+              promotedAt: $promotedAt
             }' > "promotion-manifests/${component}-promotion.json"
 
             aws s3 cp \

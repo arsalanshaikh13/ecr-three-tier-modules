@@ -33,20 +33,6 @@ echo "======================================================"
 
 # Step 1: Tell AWS to drain the tasks
 echo "1️⃣ Scaling services down to 0 tasks..."
-for SERVICE_NAME in "${SERVICES[@]}"; do
-  echo "   📉 Scaling $SERVICE_NAME..."
-  aws ecs update-service \
-    --cluster "$CLUSTER_NAME" \
-    --service "$SERVICE_NAME" \
-    --desired-count 0 \
-    --region "$REGION" > /dev/null
-
-  if [ $? -ne 0 ]; then
-    echo "   ❌ Failed to update $SERVICE_NAME. Please check your AWS credentials and cluster name."
-    exit 1
-  fi
-done
-
 echo "Force-stopping running ECS tasks after desired count is set to 0..."
 
 for SERVICE_NAME in "${SERVICES[@]}"; do

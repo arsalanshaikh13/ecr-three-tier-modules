@@ -53,11 +53,11 @@ runs:
           COMPONENT=$(jq -r '.component' "$METADATA_FILE")
           CLUSTER=$(jq -r '.cluster' "$METADATA_FILE")
           SERVICE=$(jq -r '.service' "$METADATA_FILE")
-          PREVIOUS_TASK_DEF_ARN=$(jq -r '.previousTaskDefinitionArn' "$METADATA_FILE")
-          NEW_TASK_DEF_ARN=$(jq -r '.newTaskDefinitionArn' "$METADATA_FILE")
-          IMAGE_URI=$(jq -r '.imageUri' "$METADATA_FILE")
-          COMMIT_SHA=$(jq -r '.commitSha' "$METADATA_FILE")
-          RUN_ID=$(jq -r '.workflowRunId' "$METADATA_FILE")
+          PREVIOUS_TASK_DEF_ARN=$(jq -r '.previousTaskDefinitionArn // .previous_task_definition_arn' "$METADATA_FILE")
+          NEW_TASK_DEF_ARN=$(jq -r '.newTaskDefinitionArn // .new_task_definition_arn' "$METADATA_FILE")
+          IMAGE_URI=$(jq -r '.imageUri // .image_uri' "$METADATA_FILE")
+          COMMIT_SHA=$(jq -r '.commitSha // .commit_sha' "$METADATA_FILE")
+          RUN_ID=$(jq -r '.workflowRunId // .workflow_run_id' "$METADATA_FILE")
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           MANIFEST_FILE="${{ inputs.manifest_dir }}/${COMPONENT}-${{ inputs.environment }}-${{ inputs.status }}-${GITHUB_RUN_ID}.json"
           MANIFEST_S3_KEY="${{ inputs.bucket_prefix_root }}/${COMPONENT}/${{ inputs.status }}/$(basename "$MANIFEST_FILE")"
@@ -84,10 +84,10 @@ runs:
               component: $component,
               cluster: $cluster,
               service: $service,
-              previousTaskDefinitionArn: $previousTaskDefinitionArn,
+              previousTaskDefinitionArn: ($previousTaskDefinitionArn | if . == "" or . == "null" then null else . end),
               taskDefinitionArn: $taskDefinitionArn,
-              imageUri: $imageUri,
-              commitSha: $commitSha,
+              imageUri: ($imageUri | if . == "" or . == "null" then null else . end),
+              commitSha: ($commitSha | if . == "" or . == "null" then null else . end),
               workflowRunId: $workflowRunId,
               workflowName: $workflowName,
               deployedBy: $deployedBy,

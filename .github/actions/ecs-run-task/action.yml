@@ -1,34 +1,71 @@
 name: ECS Run Task
-description: Run an ECS task for non-awsvpc modes such as EC2 bridge or host networking.
+description: Run an ECS task for non-awsvpc modes such as EC2 bridge or host networking, or update an ECS service to a new task definition.
 
 inputs:
+  run_mode:
+    description: Whether to start a one-off task or update an ECS service. Valid values are task or service.
+    required: false
+    default: task
   cluster:
     description: ECS cluster name or ARN.
     required: true
   task_definition:
-    description: Task definition ARN or family:revision to run.
+    description: Task definition ARN or family:revision to run or attach to a service.
     required: true
+  service:
+    description: ECS service name when run_mode is service.
+    required: false
   launch_type:
     description: Launch type for the task, typically EC2 for non-awsvpc tasks.
     required: false
     default: EC2
+  force_new_deployment:
+    description: Whether service mode should force a new deployment after updating the service.
+    required: false
+    default: true
 
 outputs:
   task_arn:
-    description: ARN of the started ECS task.
-    value: ${{ steps.run_task.outputs.task_arn }}
+    description: ARN of the started ECS task when run_mode is task.
+    value: ${{ steps.run_or_update.outputs.task_arn }}
+  service:
+    description: ECS service name when run_mode is service.
+    value: ${{ steps.run_or_update.outputs.service }}
 
 runs:
   using: composite
   steps:
-    - id: run_task
+    - id: run_or_update
       shell: bash
       run: |
         set -euo pipefail
 
-        # Use this action when the task definition does not expect awsvpc networking,
-        # such as EC2 bridge/host mode jobs like the current DB seeder.
-        # Keep the non-awsvpc path simple: no network configuration should be passed here.
+        if [ "${{ inputs.run_mode }}" = "service" ]; then
+          # Service updates do not need per-task network configuration here because the ECS
+          # service already owns its networking and launch-type settings in AWS.
+          if [ -z "${{ inputs.service }}" ]; then
+            echo "Error: service input is required when run_mode is service."
+            exit 1
+          fi
+
+          UPDATE_ARGS=(
+            --cluster "${{ inputs.cluster }}"
+            --service "${{ inputs.service }}"
+            --task-definition "${{ inputs.task_definition }}"
+          )
+
+          if [ "${{ inputs.force_new_deployment }}" = "true" ]; then
+            UPDATE_ARGS+=(--force-new-deployment)
+          fi
+
+          aws ecs update-service "${UPDATE_ARGS[@]}" >/dev/null
+          echo "service=${{ inputs.service }}" >> "$GITHUB_OUTPUT"
+          echo "task_arn=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Use task mode when the task definition does not expect awsvpc networking, such as
+        # EC2 bridge/host mode jobs like the current DB seeder. No network configuration is passed.
         TASK_ARN=$(aws ecs run-task \
           --cluster "${{ inputs.cluster }}" \
           --task-definition "${{ inputs.task_definition }}" \
@@ -42,3 +79,4 @@ runs:
         fi
 
         echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+        echo "service=" >> "$GITHUB_OUTPUT"

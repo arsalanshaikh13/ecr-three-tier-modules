@@ -9,7 +9,6 @@ on:
       - "lirw-three-tier/frontend/**"
       - "lirw-three-tier/backend/**"
       - "lirw-three-tier/probe/**"
-      - ".github/workflows/**"
   workflow_dispatch:
     inputs:
       action_type:
@@ -67,7 +66,7 @@ on:
         type: string
         required: false
       rollback_manifest_s3_key:
-        description: "Optional S3 manifest key whose taskDefinitionArn should be rolled back"
+        description: "Optional S3 manifest key whose task_definition_arn should be rolled back"
         type: string
         required: false
 
@@ -90,10 +89,54 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Push-based change detection should compare the pushed revision against the
+          # commit that immediately preceded it, not against main. Fetching a little
+          # extra history makes that comparison available inside the runner.
+          fetch-depth: 2
+
+      - name: Resolve safe diff base for push events
+        id: diff-base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZERO_SHA="0000000000000000000000000000000000000000"
+          BEFORE_SHA="${{ github.event.before }}"
+
+          # Normal pushes provide a real "before" SHA and should diff against that exact
+          # previous revision. This keeps path filtering scoped to the current push instead
+          # of drifting toward a long-lived branch vs main comparison.
+          if [ "$BEFORE_SHA" != "$ZERO_SHA" ]; then
+            echo "base=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
+            echo "use_fallback_scan=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Some first-push or branch-creation events surface an all-zero SHA. In that case,
+          # prefer the local parent commit when available instead of falling back to main,
+          # because main would reintroduce the "branch always looks changed" problem.
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            echo "base=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+            echo "use_fallback_scan=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If even a parent commit is unavailable, treat monitored app areas as changed.
+          # This intentionally biases toward running CI/CD once on the first push rather than
+          # silently skipping deployable code because no safe diff base exists.
+          echo "base=" >> "$GITHUB_OUTPUT"
+          echo "use_fallback_scan=true" >> "$GITHUB_OUTPUT"
 
       - uses: dorny/paths-filter@v3
         id: filter
+        if: ${{ steps.diff-base.outputs.use_fallback_scan != 'true' }}
         with:
+          # On push events, anchor change detection to the exact before/after SHAs from
+          # the webhook payload so feature branches do not look "changed forever" just
+          # because they differ from main. Manual dispatch remains the path for workflow testing.
+          base: ${{ steps.diff-base.outputs.base }}
+          ref: ${{ github.sha }}
           filters: |
             frontend:
               - 'lirw-three-tier/frontend/**'
@@ -101,6 +144,18 @@ jobs:
               - 'lirw-three-tier/backend/**'
             probe:
               - 'lirw-three-tier/probe/**'
+
+      - name: Fallback path flags for zero-SHA first push
+        id: filter-fallback
+        if: ${{ steps.diff-base.outputs.use_fallback_scan == 'true' }}
+        shell: bash
+        run: |
+          # This fallback is intentionally simple: if GitHub did not give us a usable diff
+          # base and the local clone has no parent commit to compare against, assume the
+          # monitored app surfaces changed for this first push.
+          echo "frontend=true" >> "$GITHUB_OUTPUT"
+          echo "backend=true" >> "$GITHUB_OUTPUT"
+          echo "probe=true" >> "$GITHUB_OUTPUT"
 
       - name: Calculate Dynamic Matrix
         id: set-matrix
@@ -110,8 +165,11 @@ jobs:
 
           # 1. PUSH EVENT: Only build based on path filters
           if [ "${{ github.event_name }}" == "push" ]; then
-            if [ "${{ steps.filter.outputs.frontend }}" == "true" ]; then COMPONENTS+=("frontend"); fi
-            if [ "${{ steps.filter.outputs.backend }}" == "true" ]; then COMPONENTS+=("backend"); fi
+            FRONTEND_CHANGED="${{ steps.filter.outputs.frontend || steps.filter-fallback.outputs.frontend }}"
+            BACKEND_CHANGED="${{ steps.filter.outputs.backend || steps.filter-fallback.outputs.backend }}"
+
+            if [ "$FRONTEND_CHANGED" == "true" ]; then COMPONENTS+=("frontend"); fi
+            if [ "$BACKEND_CHANGED" == "true" ]; then COMPONENTS+=("backend"); fi
             # Probe is built in its own post-deploy job, so we only need app components here.
             # For push events we deploy dev only by default to keep production gated.
             TARGET_ENVS=("dev")
@@ -171,129 +229,32 @@ jobs:
     needs: detect-changes
     # CRITICAL: If the array is empty, skip this job entirely to prevent matrix errors
     if: ${{ needs.detect-changes.outputs.matrix != '[]' }}
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         # This dynamically loads component+environment objects from detect-changes.
         include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    # IMPORTANT:
-    # Environment-scoped vars/secrets (AWS_REGION, ACCOUNT_ID, ENV_VAR, PROJECT_NAME, etc.)
-    # are resolved from the selected GitHub Environment.
-    environment: ${{ matrix.environment }}
-    env:
-      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # Reuse the shared build/push action so frontend/backend image publishing stays consistent.
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image
-        # CRITICAL: If the array is empty, skip this job entirely to prevent matrix errors
-        # if (inputs.build_frontend == true || inputs.build_backend == true) || github.event_name == 'push'
-        if: |
-          (github.event_name == 'workflow_dispatch' && (inputs.build_frontend == true || inputs.build_backend == true)) ||
-          github.event_name == 'push'
-
-        uses: ./.github/actions/ecs-build-push-image
-        with:
-          workdir: lirw-three-tier/${{ matrix.component }}
-          ecr_registry: ${{ steps.login-ecr.outputs.registry }}
-          ecr_repository: ${{ vars.PROJECT_NAME }}-${{ matrix.component }}-repo-${{ vars.ENV_VAR }}
-          image_tag: ${{ github.sha }}
-          additional_tag: latest
-
-      # Reuse the shared ECR lookup action so manual redeploys can pull the latest existing image.
-      - name: Determine Image URI (Fetch from ECR)
-        id: determine-image
-        # if (inputs.get_frontend == true || inputs.get_backend == true) || github.event_name == 'push'
-        if: |
-          (github.event_name == 'workflow_dispatch' && (inputs.get_frontend == true || inputs.get_backend == true)) ||
-          github.event_name == 'push'
-
-        uses: ./.github/actions/ecr-fetch-image
-        with:
-          ecr_registry: ${{ steps.login-ecr.outputs.registry }}
-          ecr_repository: ${{ vars.PROJECT_NAME }}-${{ matrix.component }}-repo-${{ vars.ENV_VAR }}
-
-      # Keep task-definition download logic centralized so app, probe, and seeder flows stay aligned.
-      - name: Download current ECS task definition
-        id: current-task-def
-        uses: ./.github/actions/ecs-download-task-definition
-        with:
-          task_definition_name: ${{ vars.PROJECT_NAME }}-${{ matrix.component }}
-          output_path: task-definition-${{ matrix.component }}.json
-
-      - name: Log current task definition ARN
-        run: |
-          # The download action now returns both the JSON file for rendering and the ARN for future rollback logic.
-          echo "Current task definition ARN: ${{ steps.current-task-def.outputs.task_definition_arn }}"
-
-      - name: Fill in the new image ID in the Amazon ECS task definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition-${{ matrix.component }}.json
-          container-name: ${{ vars.PROJECT_NAME }}_${{ matrix.component }}
-          # The reusable ECR fetch action exposes the image URI as `image`, so keep this aligned.
-          image: ${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}
-
-      - name: Register new task definition
-        id: register-task-def
-        run: |
-          # Register explicitly so the workflow has the exact deployed ARN for manifests, SSM pointers, and rollback metadata.
-          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-
-          echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
-
-      - name: Persist deployment metadata for later jobs
-        run: |
-          # Store deploy metadata per component/environment so probe, finalize, and rollback
-          # all operate on the same versioned identifiers instead of re-discovering state later.
-          cat > deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json <<EOF
-          {
-            "component": "${{ matrix.component }}",
-            "environment": "${{ matrix.environment }}",
-            "cluster": "${{ env.ECS_CLUSTER }}",
-            "service": "${{ matrix.component }}-service",
-            "previousTaskDefinitionArn": "${{ steps.current-task-def.outputs.task_definition_arn }}",
-            "newTaskDefinitionArn": "${{ steps.register-task-def.outputs.task_definition_arn }}",
-            "imageUri": "${{ steps.build-image.outputs.image || steps.determine-image.outputs.image }}",
-            "commitSha": "${{ github.sha }}",
-            "workflowRunId": "${{ github.run_id }}"
-          }
-          EOF
-
-      - name: Upload deployment metadata artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}
-          path: deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json
-          if-no-files-found: error
-
-      - name: Update ECS service to new task definition
-        run: |
-          # Update the service explicitly so deep probe checks can gate whether this new revision is accepted as known-good.
-          aws ecs update-service \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --service "${{ matrix.component }}-service" \
-            --task-definition "${{ steps.register-task-def.outputs.task_definition_arn }}" \
-            --force-new-deployment
+    # The caller keeps only orchestration concerns here: matrix expansion, deploy policy
+    # selection, and dependency wiring. The cloud mechanics now live in a reusable workflow.
+    uses: ./.github/workflows/reusable-deploy-service.yml
+    with:
+      environment: ${{ matrix.environment }}
+      component: ${{ matrix.component }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      # Default to non-awsvpc so existing environments keep working even before the new
+      # environment-scoped vars are populated. Environments can opt into awsvpc by setting vars.
+      service_network_mode: ${{ vars.SERVICE_NETWORK_MODE || 'non-awsvpc' }}
+      security_group_name: ${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}
+      subnet_tag_values: ${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}
+      assign_public_ip: ${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}
+      # Push events always build fresh images. Manual runs can choose per component whether
+      # deploy should build a new image or reuse one that is already in ECR.
+      build_image: ${{ github.event_name == 'push' || (matrix.component == 'frontend' && inputs.build_frontend) || (matrix.component == 'backend' && inputs.build_backend) }}
+      fetch_image: ${{ github.event_name == 'workflow_dispatch' && ((matrix.component == 'frontend' && inputs.get_frontend) || (matrix.component == 'backend' && inputs.get_backend)) }}
+    secrets: inherit
 
   # ---------------------------------------------------------
   # 3. POST-DEPLOY PROBE (Runs once per environment)
@@ -302,276 +263,21 @@ jobs:
     name: Probe App (${{ matrix.environment }})
     needs: [detect-changes, build-and-deploy]
     if: ${{ needs.detect-changes.outputs.env_matrix != '[]' || needs.detect-changes.outputs.matrix != '[]' }}
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
-    environment: ${{ matrix.environment }}
-    env:
-      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # Reuse the shared build/push action so probe image publishing behaves like the app images.
-      - name: Build and push probe image
-        id: build-probe
-        uses: ./.github/actions/ecs-build-push-image
-        with:
-          workdir: lirw-three-tier/probe
-          ecr_registry: ${{ steps.login-ecr.outputs.registry }}
-          ecr_repository: ${{ vars.PROJECT_NAME }}-probe-repo-${{ vars.ENV_VAR }}
-          image_tag: ${{ github.sha }}
-          additional_tag: latest
-
-      # Probe reuses the same task-definition download action as services and seeding.
-      - name: Download current ECS task definition
-        uses: ./.github/actions/ecs-download-task-definition
-        with:
-          task_definition_name: ${{ vars.PROJECT_NAME }}-probe-${{ vars.ENV_VAR }}
-          output_path: task-definition-probe-${{ vars.ENV_VAR }}.json
-
-      # Keep the probe render step explicit so it is clear which container image is being swapped.
-      - name: Render new task definition with new image
-        id: render-seeder-task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition-probe-${{ vars.ENV_VAR }}.json
-          # This must match the probe container name in the ECS task definition JSON.
-          container-name: ${{ vars.PROJECT_NAME }}-probe-${{ vars.ENV_VAR }}
-          image: ${{ steps.build-probe.outputs.image }}
-
-      - name: Register probe task definition
-        id: register-probe-task-def
-        run: |
-          PROBE_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://${{ steps.render-seeder-task-def.outputs.task-definition }} \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-
-          echo "task_def_arn=$PROBE_TASK_DEF_ARN" >> $GITHUB_OUTPUT
-
-      # Centralize network lookups so private-subnet task launches use the same resolution logic everywhere.
-      - name: Fetch Network IDs via AWS CLI
-        id: lookup_probe_id
-        uses: ./.github/actions/aws-fetch-network-ids
-        with:
-          security_group_name: ecs-node-frontend-sg-${{ vars.ENV_VAR }}
-          subnet_tag_values: pri-sub-3a,pri-sub-4b
-
-      # Probe uses awsvpc because it runs as a Fargate task in private subnets and needs its own ENI.
-      - name: Run probe task in private subnets
-        id: run-probe
-        uses: ./.github/actions/ecs-run-task-awsvpc
-        with:
-          cluster: ${{ env.ECS_CLUSTER }}
-          task_definition: ${{ steps.register-probe-task-def.outputs.task_def_arn }}
-          launch_type: FARGATE
-          subnet_ids_json: ${{ steps.lookup_probe_id.outputs.subnet_ids_json }}
-          security_group_id: ${{ steps.lookup_probe_id.outputs.security_group_id }}
-          assign_public_ip: DISABLED
-
-      - name: Wait for probe task to stop
-        id: wait-probe
-        run: |
-          aws ecs wait tasks-stopped \
-              --cluster "${{ env.ECS_CLUSTER }}" \
-              --tasks "${{ steps.run-probe.outputs.task_arn }}"
-
-      - name: Check probe task result
-        id: probe-result
-        run: |
-          EXIT_CODE=$(aws ecs describe-tasks \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
-            --query "tasks[0].containers[0].exitCode" \
-            --output text)
-
-          STOPPED_REASON=$(aws ecs describe-tasks \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
-            --query "tasks[0].stoppedReason" \
-            --output text)
-
-          CONTAINER_REASON=$(aws ecs describe-tasks \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
-            --query "tasks[0].containers[0].reason" \
-            --output text)
-
-          # Get the container name from the running probe task
-          CONTAINER_NAME=$(aws ecs describe-tasks \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --tasks "${{ steps.run-probe.outputs.task_arn }}" \
-            --query "tasks[0].containers[0].name" \
-            --output text)
-
-          # Extract task ID from the task ARN (last segment after the final '/')
-          # e.g. arn:aws:ecs:us-east-1:123456789:task/cluster-name/92c58260c435 -> 92c58260c435
-          TASK_ID=$(echo "${{ steps.run-probe.outputs.task_arn }}" | awk -F'/' '{print $NF}')
-
-          # Get the CloudWatch log stream prefix defined in the task definition's log configuration
-          STREAM_PREFIX=$(aws ecs describe-task-definition \
-            --task-definition "${{ steps.register-probe-task-def.outputs.task_def_arn }}" \
-            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-stream-prefix"' \
-            --output text)
-
-          # Construct the full log stream name using the ECS convention: prefix/container-name/task-id
-          LOG_STREAM_NAME="${STREAM_PREFIX}/${CONTAINER_NAME}/${TASK_ID}"
-
-          # Get the CloudWatch log group name defined in the task definition's log configuration
-          LOG_GROUP_NAME=$(aws ecs describe-task-definition \
-            --task-definition "${{ steps.register-probe-task-def.outputs.task_def_arn }}" \
-            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
-            --output text)
-
-
-          LOG_FILE="probe-logs-${{ matrix.environment }}.txt"
-
-          echo "Probe exit code: $EXIT_CODE"
-          echo "Task stopped reason: $STOPPED_REASON"
-          echo "Container reason: $CONTAINER_REASON"
-
-          # Pull probe logs back into CI so failures such as HTTP 503 are visible immediately
-          # without requiring a separate trip to CloudWatch for first-pass diagnosis.
-          if [ -n "$LOG_GROUP_NAME" ] && [ "$LOG_GROUP_NAME" != "None" ] && [ -n "$LOG_STREAM_NAME" ] && [ "$LOG_STREAM_NAME" != "None" ]; then
-            echo "Probe CloudWatch log group: $LOG_GROUP_NAME"
-            echo "Probe CloudWatch log stream: $LOG_STREAM_NAME"
-            echo "----- Begin Probe Logs -----"
-            aws logs get-log-events \
-              --log-group-name "$LOG_GROUP_NAME" \
-              --log-stream-name "$LOG_STREAM_NAME" \
-              --query 'events[*].message' \
-              --output text | tee "$LOG_FILE" || true
-            echo "----- End Probe Logs -----"
-          else
-            echo "Probe log stream metadata was not available, so no CloudWatch logs were printed in CI."
-            echo "Probe log stream metadata was not available, so no CloudWatch logs were printed in CI." > "$LOG_FILE"
-          fi
-
-          PROBE_REASON="Probe exit code: $EXIT_CODE | Task stopped reason: $STOPPED_REASON | Container reason: $CONTAINER_REASON"
-          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          echo "log_file=$LOG_FILE" >> "$GITHUB_OUTPUT"
-          {
-            echo "probe_reason<<EOF"
-            echo "$PROBE_REASON"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          if [ "$EXIT_CODE" != "0" ]; then
-            exit 1
-          fi
-
-      - name: Download deployment metadata artifacts
-        if: ${{ always() }}
-        uses: actions/download-artifact@v4
-        with:
-          pattern: deploy-metadata-*-${{ matrix.environment }}
-          path: deploy-metadata
-          merge-multiple: true
-
-      - name: Persist successful deployment state and manifests
-        if: ${{ success() }}
-        id: success-manifests
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p manifests/success
-          SUMMARY_FILE="manifests/success/pr-summary-${{ matrix.environment }}.md"
-          touch "$SUMMARY_FILE"
-          echo "summary_file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
-
-      - name: Update deployment pointers after probe success
-        if: ${{ success() }}
-        uses: ./.github/actions/deployment-pointer-write-batch
-        with:
-          metadata_glob: deploy-metadata/deploy-metadata-*-${{ matrix.environment }}.json
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-
-      - name: Persist successful deployment state and manifests
-        if: ${{ success() }}
-        uses: ./.github/actions/deployment-manifest-write-batch
-        with:
-          metadata_glob: deploy-metadata/deploy-metadata-*-${{ matrix.environment }}.json
-          manifest_dir: manifests/success
-          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
-          bucket_prefix_root: ${{ vars.PROJECT_NAME }}/deployments/${{ matrix.environment }}
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          status: successful
-          reason: ${{ steps.probe-result.outputs.probe_reason }}
-          workflow_name: ${{ github.workflow }}
-          actor: ${{ github.actor }}
-          summary_file: ${{ steps.success-manifests.outputs.summary_file }}
-
-      - name: Upload successful deployment manifests
-        if: ${{ success() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: successful-deployment-manifests-${{ matrix.environment }}
-          path: manifests/success
-          if-no-files-found: error
-
-      - name: Publish deployment summary to job summary
-        if: ${{ success() }}
-        shell: bash
-        run: |
-          # Job summaries are a lighter-weight place to iterate on deployment reporting:
-          # they stay attached to the workflow run without adding PR noise while the
-          # rollout, probe, and rollback flow is still being refined.
-          cat "${{ steps.success-manifests.outputs.summary_file }}" >> "$GITHUB_STEP_SUMMARY"
-
-          {
-            echo "## Deployment Context"
-            echo "- Workflow: \`${{ github.workflow }}\`"
-            echo "- Run ID: \`${{ github.run_id }}\`"
-            echo "- Actor: \`${{ github.actor }}\`"
-            echo "- Commit SHA: \`${{ github.sha }}\`"
-            echo "- Environment: \`${{ matrix.environment }}\`"
-            echo "- Probe reason: ${{ steps.probe-result.outputs.probe_reason }}"
-            echo "- Manifest artifact: \`successful-deployment-manifests-${{ matrix.environment }}\`"
-            echo "- Manifest bucket: \`${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}\`"
-            echo
-            echo "### Probe Log Artifact"
-            echo "- Probe log file: \`${{ steps.probe-result.outputs.log_file }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Persist failed deployment manifests
-        if: ${{ failure() }}
-        uses: ./.github/actions/deployment-manifest-write-batch
-        with:
-          metadata_glob: deploy-metadata/deploy-metadata-*-${{ matrix.environment }}.json
-          manifest_dir: manifests/failure
-          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
-          bucket_prefix_root: ${{ vars.PROJECT_NAME }}/deployments/${{ matrix.environment }}
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          status: failed
-          reason: ${{ steps.probe-result.outputs.probe_reason }}
-          workflow_name: ${{ github.workflow }}
-          actor: ${{ github.actor }}
-
-      - name: Upload failed deployment manifests
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: failed-deployment-manifests-${{ matrix.environment }}
-          path: manifests/failure
-          if-no-files-found: error
+    # Probe is now a reusable orchestration unit because it combines task registration,
+    # awsvpc execution, log surfacing, pointer updates, and manifest persistence.
+    uses: ./.github/workflows/reusable-probe-environment.yml
+    with:
+      environment: ${{ matrix.environment }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+    secrets: inherit
 
   # ---------------------------------------------------------
   # 5. ROLLBACK (Use SSM last-known-good pointer when probe/finalize fails)
@@ -580,112 +286,48 @@ jobs:
     name: Roll Back ${{ matrix.component }} (${{ matrix.environment }})
     needs: [detect-changes, build-and-deploy, probe-app]
     if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && needs.probe-app.result == 'failure'  }}
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    environment: ${{ matrix.environment }}
+    # Automatic rollback is now a reusable workflow because the whole recovery sequence is
+    # repeated orchestration: metadata download, pointer lookup, service rollback, and manifests.
+    uses: ./.github/workflows/reusable-auto-rollback.yml
+    with:
+      environment: ${{ matrix.environment }}
+      component: ${{ matrix.component }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+    secrets: inherit
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Download deployment metadata artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}
-          path: deploy-metadata
-
-      - name: Read rollback metadata
-        id: rollback-metadata
-        shell: bash
-        run: |
-          METADATA_FILE="deploy-metadata/deploy-metadata-${{ matrix.component }}-${{ matrix.environment }}.json"
-
-          # Metadata still provides the service identity and attempted revision, while the
-          # rollback target itself comes from the SSM last-known-good pointer.
-          echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
-          echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
-          echo "attempted_task_definition_arn=$(jq -r '.newTaskDefinitionArn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
-
-      - name: Read last-known-good rollback pointer
-        id: rollback-pointer
-        uses: ./.github/actions/deployment-pointer-read
-        with:
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          component: ${{ matrix.component }}
-
-      - name: Validate rollback target exists
-        shell: bash
-        run: |
-          if [ -z "${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}" ]; then
-            echo "Error: No last-known-good task definition ARN found in SSM for ${{ matrix.component }} (${{ matrix.environment }})."
-            exit 1
-          fi
-
-      - name: Roll back ECS service
-        uses: ./.github/actions/ecs-rollback-service
-        with:
-          cluster: ${{ steps.rollback-metadata.outputs.cluster }}
-          service: ${{ steps.rollback-metadata.outputs.service }}
-          task_definition: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
-
-      # - name: Wait for rollback stability
-      #   uses: ./.github/actions/ecs-wait-service-stable
-      #   with:
-      #     cluster: ${{ steps.rollback-metadata.outputs.cluster }}
-      #     service: ${{ steps.rollback-metadata.outputs.service }}
-
-      - name: Reset deployment pointers after rollback
-        uses: ./.github/actions/deployment-pointer-write
-        with:
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          component: ${{ matrix.component }}
-          current_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
-          last_known_good_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
-
-      - name: Capture rollback timestamp
-        id: rollback-timestamp
-        shell: bash
-        run: |
-          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
-
-      - name: Persist rollback state and manifest
-        id: rollback-manifest
-        uses: ./.github/actions/deployment-manifest-write
-        with:
-          manifest_dir: manifests/rollback
-          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
-          bucket_prefix: ${{ vars.PROJECT_NAME }}/deployments/${{ matrix.environment }}/${{ matrix.component }}/rollback
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          component: ${{ matrix.component }}
-          cluster: ${{ steps.rollback-metadata.outputs.cluster }}
-          service: ${{ steps.rollback-metadata.outputs.service }}
-          task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
-          previous_task_definition_arn: ${{ steps.rollback-metadata.outputs.attempted_task_definition_arn }}
-          workflow_run_id: ${{ github.run_id }}
-          workflow_name: ${{ github.workflow }}
-          actor: ${{ github.actor }}
-          timestamp: ${{ steps.rollback-timestamp.outputs.value }}
-          status: rolled_back
-          reason: Rollback completed using the last-known-good SSM pointer after probe or finalize failure.
-
-      - name: Upload rollback manifests
-        uses: actions/upload-artifact@v4
-        with:
-          name: rollback-manifests-${{ matrix.component }}-${{ matrix.environment }}
-          path: manifests/rollback
-          if-no-files-found: error
+  # ---------------------------------------------------------
+  # 5b. VERIFY AUTO ROLLBACK RECOVERY
+  # ---------------------------------------------------------
+  verify-rollback-recovery:
+    name: Verify Rollback Recovery (${{ matrix.environment }})
+    needs: [detect-changes, rollback]
+    if: ${{ always() && needs.rollback.result == 'success' && needs.detect-changes.outputs.env_matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
+    # Rollback should be treated like a recovery deployment, not assumed healthy by default.
+    # We reuse the same probe workflow, but explicitly disable pointer advancement because
+    # rollback verification is confirming recovery, not promoting a new revision.
+    uses: ./.github/workflows/reusable-probe-environment.yml
+    with:
+      environment: ${{ matrix.environment }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+      update_pointers_on_success: false
+      probe_purpose: rollback_verification
+    secrets: inherit
 
   # ---------------------------------------------------------
   # 6. MANUAL ROLLBACK (Workflow dispatch only)
@@ -693,156 +335,42 @@ jobs:
   manual-rollback:
     name: Manual Roll Back ${{ inputs.rollback_component }} (${{ inputs.target_environment }})
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment }}
-    env:
-      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
+    # Manual rollback remains a separate reusable workflow from auto rollback because its
+    # contract is operator-driven: explicit ARN, manifest history, or trusted SSM fallback.
+    uses: ./.github/workflows/reusable-manual-rollback.yml
+    with:
+      environment: ${{ inputs.target_environment }}
+      component: ${{ inputs.rollback_component }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+      rollback_task_definition_arn: ${{ inputs.rollback_task_definition_arn }}
+      rollback_manifest_s3_key: ${{ inputs.rollback_manifest_s3_key }}
+    secrets: inherit
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Validate manual rollback inputs
-        shell: bash
-        run: |
-          # Manual rollback is intentionally scoped to one environment and one component
-          # so the operator can make a deliberate recovery choice with clear audit logs.
-          if [ "${{ inputs.target_environment }}" = "all" ]; then
-            echo "Error: manual rollback must target a single environment, not 'all'."
-            exit 1
-          fi
-
-      - name: Capture current service state before manual rollback
-        id: current-service-state
-        shell: bash
-        run: |
-          CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --services "${{ inputs.rollback_component }}-service" \
-            --query 'services[0].taskDefinition' \
-            --output text)
-
-          echo "current_task_definition_arn=$CURRENT_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve manual rollback target
-        id: resolve-rollback
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Resolution order mirrors standard production rollback practice:
-          # explicit ARN > manifest history > trusted SSM pointer.
-          if [ -n "${{ inputs.rollback_task_definition_arn }}" ]; then
-            echo "task_definition_arn=${{ inputs.rollback_task_definition_arn }}" >> "$GITHUB_OUTPUT"
-            echo "reason=Manual rollback used the explicitly provided task definition ARN." >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -n "${{ inputs.rollback_manifest_s3_key }}" ]; then
-            aws s3 cp "s3://${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}/${{ inputs.rollback_manifest_s3_key }}" rollback-manifest-source.json >/dev/null
-            MANIFEST_TASK_DEF_ARN=$(jq -r '.taskDefinitionArn' rollback-manifest-source.json)
-
-            if [ -z "$MANIFEST_TASK_DEF_ARN" ] || [ "$MANIFEST_TASK_DEF_ARN" = "null" ]; then
-              echo "Error: manifest did not contain a taskDefinitionArn."
-              exit 1
-            fi
-
-            echo "task_definition_arn=$MANIFEST_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
-            echo "reason=Manual rollback used the task definition ARN recorded in the selected deployment manifest." >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "task_definition_arn=" >> "$GITHUB_OUTPUT"
-
-      - name: Read last-known-good rollback pointer
-        id: manual-rollback-pointer
-        if: ${{ steps.resolve-rollback.outputs.task_definition_arn == '' }}
-        uses: ./.github/actions/deployment-pointer-read
-        with:
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ inputs.target_environment }}
-          component: ${{ inputs.rollback_component }}
-
-      - name: Choose final manual rollback target
-        id: manual-rollback-target
-        shell: bash
-        run: |
-          TARGET_ARN="${{ steps.resolve-rollback.outputs.task_definition_arn }}"
-          TARGET_REASON="${{ steps.resolve-rollback.outputs.reason }}"
-
-          if [ -z "$TARGET_ARN" ]; then
-            TARGET_ARN="${{ steps.manual-rollback-pointer.outputs.last_known_good_task_definition_arn }}"
-            TARGET_REASON="Manual rollback defaulted to the trusted SSM last-known-good pointer."
-          fi
-
-          if [ -z "$TARGET_ARN" ]; then
-            echo "Error: no rollback target could be resolved."
-            exit 1
-          fi
-
-          echo "task_definition_arn=$TARGET_ARN" >> "$GITHUB_OUTPUT"
-          echo "reason=$TARGET_REASON" >> "$GITHUB_OUTPUT"
-
-      - name: Roll back ECS service
-        uses: ./.github/actions/ecs-rollback-service
-        with:
-          cluster: ${{ env.ECS_CLUSTER }}
-          service: ${{ inputs.rollback_component }}-service
-          task_definition: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
-
-      # - name: Wait for rollback stability
-      #   uses: ./.github/actions/ecs-wait-service-stable
-      #   with:
-      #     cluster: ${{ env.ECS_CLUSTER }}
-      #     service: ${{ inputs.rollback_component }}-service
-
-      - name: Reset deployment pointers after manual rollback
-        uses: ./.github/actions/deployment-pointer-write
-        with:
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ inputs.target_environment }}
-          component: ${{ inputs.rollback_component }}
-          current_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
-          last_known_good_task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
-
-      - name: Capture manual rollback timestamp
-        id: manual-rollback-timestamp
-        shell: bash
-        run: |
-          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
-
-      - name: Persist manual rollback manifest
-        uses: ./.github/actions/deployment-manifest-write
-        with:
-          manifest_dir: manifests/manual-rollback
-          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
-          bucket_prefix: ${{ vars.PROJECT_NAME }}/deployments/${{ inputs.target_environment }}/${{ inputs.rollback_component }}/rollback
-          project: ${{ vars.PROJECT_NAME }}
-          environment: ${{ inputs.target_environment }}
-          component: ${{ inputs.rollback_component }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          service: ${{ inputs.rollback_component }}-service
-          task_definition_arn: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
-          previous_task_definition_arn: ${{ steps.current-service-state.outputs.current_task_definition_arn }}
-          workflow_run_id: ${{ github.run_id }}
-          workflow_name: ${{ github.workflow }}
-          actor: ${{ github.actor }}
-          timestamp: ${{ steps.manual-rollback-timestamp.outputs.value }}
-          status: rolled_back
-          reason: ${{ steps.manual-rollback-target.outputs.reason }}
-
-      - name: Upload manual rollback manifests
-        uses: actions/upload-artifact@v4
-        with:
-          name: manual-rollback-manifests-${{ inputs.rollback_component }}-${{ inputs.target_environment }}
-          path: manifests/manual-rollback
-          if-no-files-found: error
+  # ---------------------------------------------------------
+  # 6b. VERIFY MANUAL ROLLBACK RECOVERY
+  # ---------------------------------------------------------
+  verify-manual-rollback-recovery:
+    name: Verify Manual Rollback Recovery (${{ inputs.target_environment }})
+    needs: [manual-rollback]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' && needs.manual-rollback.result == 'success' }}
+    # Manual rollback deserves the same health verification as automatic rollback.
+    # We keep it separate from the rollback workflow itself so the graph clearly shows
+    # "recovery action" and "recovery verification" as two different outcomes.
+    uses: ./.github/workflows/reusable-probe-environment.yml
+    with:
+      environment: ${{ inputs.target_environment }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+      update_pointers_on_success: false
+      probe_purpose: rollback_verification
+    secrets: inherit
 
   # ---------------------------------------------------------
   # 7. DB SEEDING (Manual Only)
@@ -850,110 +378,24 @@ jobs:
   seed-database:
     name: Build & Run DB Seeder
     needs: detect-changes
-    runs-on: ubuntu-latest
     # ONLY runs on workflow dispatch AND if run_seeding is explicitly checked
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeding == true }}
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
-    environment: ${{ matrix.environment }}
-    env:
-      ECS_CLUSTER: ${{ vars.PROJECT_NAME }}-cluster-${{ vars.ENV_VAR }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # Reuse the shared build/push action so the seeder image follows the same tagging flow.
-      - name: Build and Push Seeder Image
-        id: build-seeder
-        uses: ./.github/actions/ecs-build-push-image
-        with:
-          workdir: lirw-three-tier/database-seeder
-          dockerfile: db.Dockerfile
-          ecr_registry: ${{ steps.login-ecr.outputs.registry }}
-          ecr_repository: ${{ vars.PROJECT_NAME }}-database-seeder-repo-${{ vars.ENV_VAR }}
-          image_tag: ${{ github.sha }}
-          additional_tag: seeder-latest
-
-      # Seeder reuses the same task-definition download action as services and probes.
-      - name: Download current Seeder task definition
-        uses: ./.github/actions/ecs-download-task-definition
-        with:
-          task_definition_name: ${{ vars.PROJECT_NAME }}-db-seeder-${{ vars.ENV_VAR }}
-          output_path: task-definition-seeder.json
-
-      - name: Render new task definition with new image
-        id: render-seeder-task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition-seeder.json
-          # CRITICAL: Change this to match the container name in your Terraform db-seeder task definition!
-          container-name: ${{ vars.PROJECT_NAME }}-db-seeder-${{ vars.ENV_VAR }}
-          image: ${{ steps.build-seeder.outputs.image }}
-
-      - name: Register new Task Definition
-        id: register-task-def
-        run: |
-          # Register the updated JSON with AWS and capture the new Revision ARN
-          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://${{ steps.render-seeder-task-def.outputs.task-definition }} \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-            
-          echo "task_def_arn=$NEW_TASK_DEF_ARN" >> $GITHUB_OUTPUT
-
-      # Seeder runs privately too, so reuse the shared network lookup action here as well.
-      - name: Fetch Network IDs via AWS CLI
-        id: lookup
-        uses: ./.github/actions/aws-fetch-network-ids
-        with:
-          security_group_name: ecs-node-backend-sg-${{ vars.ENV_VAR }}
-          subnet_tag_values: pri-sub-3a,pri-sub-4b
-
-      # Seeder currently uses the non-awsvpc path, so keep it on the plain ECS run-task action.
-      - name: Trigger ECS DB Seeding
-        id: run-seeder
-        uses: ./.github/actions/ecs-run-task
-        with:
-          cluster: ${{ env.ECS_CLUSTER }}
-          task_definition: ${{ steps.register-task-def.outputs.task_def_arn }}
-          launch_type: EC2
-
-      - name: Wait for ECS DB Seeding
-        run: |
-          echo "Task started with ARN: ${{ steps.run-seeder.outputs.task_arn }}"
-          echo "Waiting for task to complete..."
-
-          # Wait for the task to reach the STOPPED state before checking its container exit code.
-          aws ecs wait tasks-stopped \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks ${{ steps.run-seeder.outputs.task_arn }}
-            
-          echo "Task has stopped. Checking exit code..."
-
-          # Retrieve the exit code to ensure the seeding container exited successfully.
-          EXIT_CODE=$(aws ecs describe-tasks \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks ${{ steps.run-seeder.outputs.task_arn }} \
-            --query "tasks[0].containers[0].exitCode" \
-            --output text)
-            
-          if [ "$EXIT_CODE" = "0" ]; then
-            echo "Database seeding completed successfully."
-          else
-            echo "Database seeding FAILED with exit code: $EXIT_CODE"
-            echo "Check ECS CloudWatch logs for the exact SQL error."
-            exit 1 # This forces the GitHub Actions workflow to fail
-          fi
+    # Database seeding is now reusable orchestration too: build/register the seeder revision,
+    # execute it in the correct network mode, and surface the task result and logs consistently.
+    uses: ./.github/workflows/reusable-seed-database.yml
+    with:
+      environment: ${{ matrix.environment }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      env_var: ${{ vars.ENV_VAR }}
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_account_id: ${{ vars.ACCOUNT_ID }}
+      manifest_bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+      seeder_network_mode: ${{ vars.SEEDER_NETWORK_MODE || 'non-awsvpc' }}
+      seeder_security_group_name: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
+      seeder_subnet_tag_values: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}
+      seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || 'DISABLED' }}
+    secrets: inherit

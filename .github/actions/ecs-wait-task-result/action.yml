@@ -1,0 +1,141 @@
+name: ECS Wait Task Result
+description: Wait for an ECS task to stop, inspect its result, and optionally pull CloudWatch logs into CI.
+
+inputs:
+  cluster:
+    description: ECS cluster name or ARN.
+    required: true
+  task_arn:
+    description: ECS task ARN to wait for and inspect.
+    required: true
+  task_definition:
+    description: Optional task definition ARN used to resolve CloudWatch log configuration.
+    required: false
+  log_file:
+    description: Local file path where fetched log messages should be written.
+    required: false
+    default: ecs-task-logs.txt
+  fetch_logs:
+    description: Whether to resolve and fetch CloudWatch logs for the task.
+    required: false
+    default: true
+  fail_on_nonzero_exit:
+    description: Whether the action should fail when the container exit code is non-zero.
+    required: false
+    default: true
+
+outputs:
+  exit_code:
+    description: Container exit code reported by ECS.
+    value: ${{ steps.inspect-task.outputs.exit_code }}
+  stopped_reason:
+    description: ECS stopped reason for the task.
+    value: ${{ steps.inspect-task.outputs.stopped_reason }}
+  container_reason:
+    description: ECS container-level reason when available.
+    value: ${{ steps.inspect-task.outputs.container_reason }}
+  log_file:
+    description: Local file path containing fetched task logs or a fallback message.
+    value: ${{ steps.inspect-task.outputs.log_file }}
+  result_reason:
+    description: Combined human-readable reason string based on exit code and ECS stopped metadata.
+    value: ${{ steps.inspect-task.outputs.result_reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Wait for ECS task to stop
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # This wait is generic across probe-like and batch-like jobs: the caller starts the task,
+        # and this action owns the common "block until ECS has a final state" behavior.
+        aws ecs wait tasks-stopped \
+          --cluster "${{ inputs.cluster }}" \
+          --tasks "${{ inputs.task_arn }}"
+
+    - name: Inspect ECS task result
+      id: inspect-task
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        EXIT_CODE=$(aws ecs describe-tasks \
+          --cluster "${{ inputs.cluster }}" \
+          --tasks "${{ inputs.task_arn }}" \
+          --query "tasks[0].containers[0].exitCode" \
+          --output text)
+
+        STOPPED_REASON=$(aws ecs describe-tasks \
+          --cluster "${{ inputs.cluster }}" \
+          --tasks "${{ inputs.task_arn }}" \
+          --query "tasks[0].stoppedReason" \
+          --output text)
+
+        CONTAINER_REASON=$(aws ecs describe-tasks \
+          --cluster "${{ inputs.cluster }}" \
+          --tasks "${{ inputs.task_arn }}" \
+          --query "tasks[0].containers[0].reason" \
+          --output text)
+
+        LOG_FILE="${{ inputs.log_file }}"
+
+        echo "Task exit code: $EXIT_CODE"
+        echo "Task stopped reason: $STOPPED_REASON"
+        echo "Container reason: $CONTAINER_REASON"
+
+        if [ "${{ inputs.fetch_logs }}" = "true" ] && [ -n "${{ inputs.task_definition }}" ]; then
+          CONTAINER_NAME=$(aws ecs describe-tasks \
+            --cluster "${{ inputs.cluster }}" \
+            --tasks "${{ inputs.task_arn }}" \
+            --query "tasks[0].containers[0].name" \
+            --output text)
+
+          TASK_ID=$(echo "${{ inputs.task_arn }}" | awk -F'/' '{print $NF}')
+
+          STREAM_PREFIX=$(aws ecs describe-task-definition \
+            --task-definition "${{ inputs.task_definition }}" \
+            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-stream-prefix"' \
+            --output text)
+
+          LOG_GROUP_NAME=$(aws ecs describe-task-definition \
+            --task-definition "${{ inputs.task_definition }}" \
+            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
+            --output text)
+
+          LOG_STREAM_NAME="${STREAM_PREFIX}/${CONTAINER_NAME}/${TASK_ID}"
+
+          # Pull logs into CI so first-pass debugging does not require opening CloudWatch separately.
+          if [ -n "$LOG_GROUP_NAME" ] && [ "$LOG_GROUP_NAME" != "None" ] && [ -n "$LOG_STREAM_NAME" ] && [ "$LOG_STREAM_NAME" != "None" ]; then
+            echo "Task CloudWatch log group: $LOG_GROUP_NAME"
+            echo "Task CloudWatch log stream: $LOG_STREAM_NAME"
+            echo "----- Begin Task Logs -----"
+            aws logs get-log-events \
+              --log-group-name "$LOG_GROUP_NAME" \
+              --log-stream-name "$LOG_STREAM_NAME" \
+              --query 'events[*].message' \
+              --output text | tee "$LOG_FILE" || true
+            echo "----- End Task Logs -----"
+          else
+            echo "Task log stream metadata was not available, so no CloudWatch logs were printed in CI." > "$LOG_FILE"
+          fi
+        else
+          echo "Task log fetching was skipped." > "$LOG_FILE"
+        fi
+
+        RESULT_REASON="Task exit code: $EXIT_CODE | Task stopped reason: $STOPPED_REASON | Container reason: $CONTAINER_REASON"
+
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "stopped_reason=$STOPPED_REASON" >> "$GITHUB_OUTPUT"
+        echo "container_reason=$CONTAINER_REASON" >> "$GITHUB_OUTPUT"
+        echo "log_file=$LOG_FILE" >> "$GITHUB_OUTPUT"
+        {
+          echo "result_reason<<EOF"
+          echo "$RESULT_REASON"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        if [ "${{ inputs.fail_on_nonzero_exit }}" = "true" ] && [ "$EXIT_CODE" != "0" ]; then
+          exit 1
+        fi

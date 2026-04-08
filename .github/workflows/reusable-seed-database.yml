@@ -1,0 +1,230 @@
+name: Reusable Seed Database
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name used for vars, approvals, and deployment targeting."
+        required: true
+        type: string
+      project_name:
+        description: "Project name prefix used in ECS/ECR naming."
+        required: true
+        type: string
+      env_var:
+        description: "Short environment suffix used in AWS resource names, for example dev or prod."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the target environment."
+        required: true
+        type: string
+      aws_account_id:
+        description: "AWS account id used to construct the OIDC role ARN."
+        required: true
+        type: string
+      manifest_bucket:
+        description: "S3 bucket used to persist seeding manifests."
+        required: true
+        type: string
+      seeder_network_mode:
+        description: "Seeder execution network mode. Supported values are non-awsvpc and awsvpc."
+        required: false
+        type: string
+        default: non-awsvpc
+      seeder_security_group_name:
+        description: "Optional awsvpc security group name to resolve when seeder_network_mode is awsvpc."
+        required: false
+        type: string
+      seeder_subnet_tag_values:
+        description: "Optional awsvpc subnet Name tag values when seeder_network_mode is awsvpc."
+        required: false
+        type: string
+      seeder_assign_public_ip:
+        description: "Whether awsvpc seeding should assign a public IP."
+        required: false
+        type: string
+        default: DISABLED
+    outputs:
+      environment:
+        description: "Environment whose database seeding was executed."
+        value: ${{ jobs.seed-database.outputs.environment }}
+      seeding_status:
+        description: "Final database seeding status, successful or failed."
+        value: ${{ jobs.seed-database.outputs.seeding_status }}
+      seeding_reason:
+        description: "Seeder task result reason derived from ECS task exit and stop data."
+        value: ${{ jobs.seed-database.outputs.seeding_reason }}
+      seeding_log_file:
+        description: "Local log artifact filename generated for the seeder task."
+        value: ${{ jobs.seed-database.outputs.seeding_log_file }}
+      manifest_artifact_name:
+        description: "Artifact name containing seeding manifests."
+        value: ${{ jobs.seed-database.outputs.manifest_artifact_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  seed-database:
+    name: Build & Run DB Seeder (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ inputs.environment }}
+      seeding_status: ${{ steps.seeding-contract.outputs.seeding_status }}
+      seeding_reason: ${{ steps.seeder-result.outputs.result_reason }}
+      seeding_log_file: ${{ steps.seeder-result.outputs.log_file }}
+      manifest_artifact_name: seeding-manifests-${{ inputs.environment }}
+    # Keep seeding environment-scoped so approvals, vars, logs, and failure surfaces stay
+    # attached to the exact environment whose database is being mutated.
+    environment: ${{ inputs.environment }}
+    env:
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Prepare seeder task definition up to registration
+        id: prepare-seeder-task-def
+        uses: ./.github/actions/ecs-prepare-task-definition
+        with:
+          workdir: lirw-three-tier/database-seeder
+          dockerfile: db.Dockerfile
+          ecr_repository: ${{ inputs.project_name }}-database-seeder-repo-${{ inputs.env_var }}
+          image_tag: ${{ github.sha }}
+          additional_tag: seeder-latest
+          build_image: true
+          fetch_image: false
+          task_definition_name: ${{ inputs.project_name }}-db-seeder-${{ inputs.env_var }}
+          task_definition_output_path: task-definition-seeder.json
+          # Seeder keeps its own container naming, but the repetitive preparation flow is shared.
+          container_name: ${{ inputs.project_name }}-db-seeder-${{ inputs.env_var }}
+
+      - name: Trigger ECS DB seeding (non-awsvpc)
+        id: run-seeder
+        if: ${{ inputs.seeder_network_mode != 'awsvpc' }}
+        uses: ./.github/actions/ecs-run-task
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          task_definition: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
+          launch_type: EC2
+
+      - name: Trigger ECS DB seeding (awsvpc)
+        id: run-seeder-awsvpc
+        if: ${{ inputs.seeder_network_mode == 'awsvpc' }}
+        uses: ./.github/actions/ecs-run-task-awsvpc
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          task_definition: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
+          launch_type: FARGATE
+          # awsvpc seeding can be configured per environment without changing workflow code.
+          security_group_name: ${{ inputs.seeder_security_group_name }}
+          subnet_tag_values: ${{ inputs.seeder_subnet_tag_values }}
+          assign_public_ip: ${{ inputs.seeder_assign_public_ip }}
+
+      - name: Wait for ECS DB seeding result
+        id: seeder-result
+        uses: ./.github/actions/ecs-wait-task-result
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          task_arn: ${{ steps.run-seeder.outputs.task_arn || steps.run-seeder-awsvpc.outputs.task_arn }}
+          task_definition: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
+          log_file: seeder-logs-${{ inputs.environment }}.txt
+          fetch_logs: true
+          # Keep failure handling outside the shared action here so seeding can still write
+          # an auditable manifest even when the task exits non-zero.
+          fail_on_nonzero_exit: false
+
+      - name: Capture seeding timestamp
+        id: seeding-timestamp
+        shell: bash
+        run: |
+          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Report seeding success
+        if: ${{ steps.seeder-result.outputs.exit_code == '0' }}
+        shell: bash
+        run: |
+          echo "Database seeding completed successfully."
+          echo "Seeder reason: ${{ steps.seeder-result.outputs.result_reason }}"
+
+      - name: Persist successful seeding manifest
+        if: ${{ steps.seeder-result.outputs.exit_code == '0' }}
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/seeding-success
+          bucket: ${{ inputs.manifest_bucket }}
+          bucket_prefix: ${{ inputs.project_name }}/deployments/${{ inputs.environment }}/database-seeder/successful
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: database-seeder
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: db-seeder-task
+          task_definition_arn: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.prepare-seeder-task-def.outputs.current_task_definition_arn }}
+          image_uri: ${{ steps.prepare-seeder-task-def.outputs.image }}
+          commit_sha: ${{ github.sha }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.seeding-timestamp.outputs.value }}
+          status: successful
+          reason: ${{ steps.seeder-result.outputs.result_reason }}
+
+      - name: Persist failed seeding manifest
+        if: ${{ steps.seeder-result.outputs.exit_code != '0' }}
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/seeding-failure
+          bucket: ${{ inputs.manifest_bucket }}
+          bucket_prefix: ${{ inputs.project_name }}/deployments/${{ inputs.environment }}/database-seeder/failed
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: database-seeder
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: db-seeder-task
+          task_definition_arn: ${{ steps.prepare-seeder-task-def.outputs.task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.prepare-seeder-task-def.outputs.current_task_definition_arn }}
+          image_uri: ${{ steps.prepare-seeder-task-def.outputs.image }}
+          commit_sha: ${{ github.sha }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.seeding-timestamp.outputs.value }}
+          status: failed
+          reason: ${{ steps.seeder-result.outputs.result_reason }}
+
+      - name: Upload seeding manifests
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: seeding-manifests-${{ inputs.environment }}
+          path: manifests
+          if-no-files-found: error
+
+      - name: Capture seeding workflow output contract
+        if: ${{ always() }}
+        id: seeding-contract
+        shell: bash
+        run: |
+          if [ "${{ steps.seeder-result.outputs.exit_code }}" = "0" ]; then
+            echo "seeding_status=successful" >> "$GITHUB_OUTPUT"
+          else
+            echo "seeding_status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail workflow when seeding exits non-zero
+        if: ${{ steps.seeder-result.outputs.exit_code != '0' }}
+        shell: bash
+        run: |
+          echo "Database seeding FAILED."
+          echo "Seeder reason: ${{ steps.seeder-result.outputs.result_reason }}"
+          exit 1

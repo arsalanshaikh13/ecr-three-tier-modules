@@ -1,0 +1,261 @@
+name: Reusable Probe Environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name used for vars, approvals, and deployment targeting."
+        required: true
+        type: string
+      project_name:
+        description: "Project name prefix used in ECS/ECR/SSM/S3 naming."
+        required: true
+        type: string
+      env_var:
+        description: "Short environment suffix used in AWS resource names, for example dev or prod."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the target environment."
+        required: true
+        type: string
+      aws_account_id:
+        description: "AWS account id used to construct the OIDC role ARN."
+        required: true
+        type: string
+      manifest_bucket:
+        description: "S3 bucket used to persist deployment manifests."
+        required: true
+        type: string
+      update_pointers_on_success:
+        description: "Whether a successful probe should advance deployment pointers in SSM."
+        required: false
+        type: boolean
+        default: true
+      probe_purpose:
+        description: "High-level purpose of the probe. Supported values are deployment and rollback_verification."
+        required: false
+        type: string
+        default: deployment
+    outputs:
+      environment:
+        description: "Environment that was probed."
+        value: ${{ jobs.probe-environment.outputs.environment }}
+      probe_status:
+        description: "Final probe status, successful or failed."
+        value: ${{ jobs.probe-environment.outputs.probe_status }}
+      probe_reason:
+        description: "Probe result reason derived from ECS task exit and stop data."
+        value: ${{ jobs.probe-environment.outputs.probe_reason }}
+      probe_log_file:
+        description: "Local log artifact filename generated for the probe task."
+        value: ${{ jobs.probe-environment.outputs.probe_log_file }}
+      manifest_artifact_name:
+        description: "Artifact name produced for probe-generated deployment manifests."
+        value: ${{ jobs.probe-environment.outputs.manifest_artifact_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  probe-environment:
+    name: Probe App (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ inputs.environment }}
+      probe_status: ${{ steps.probe-contract.outputs.probe_status }}
+      probe_reason: ${{ steps.probe-contract.outputs.probe_reason }}
+      probe_log_file: ${{ steps.probe-result.outputs.log_file }}
+      manifest_artifact_name: ${{ steps.probe-contract.outputs.manifest_artifact_name }}
+    # Probe is environment-scoped because it validates the deployed surface of one environment
+    # and writes the corresponding success/failure manifests and deployment pointers.
+    environment: ${{ inputs.environment }}
+    env:
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Prepare probe task definition up to registration
+        id: prepare-probe-task-def
+        uses: ./.github/actions/ecs-prepare-task-definition
+        with:
+          workdir: lirw-three-tier/probe
+          ecr_repository: ${{ inputs.project_name }}-probe-repo-${{ inputs.env_var }}
+          image_tag: ${{ github.sha }}
+          additional_tag: latest
+          build_image: true
+          fetch_image: false
+          task_definition_name: ${{ inputs.project_name }}-probe-${{ inputs.env_var }}
+          task_definition_output_path: task-definition-probe-${{ inputs.env_var }}.json
+          # Probe uses its own standalone task family and container name, but the shared action
+          # still handles the repetitive image/download/render/register sequence for us.
+          container_name: ${{ inputs.project_name }}-probe-${{ inputs.env_var }}
+
+      - name: Derive probe reporting contract
+        id: probe-config
+        shell: bash
+        run: |
+          # Keep one probe workflow reusable for both normal deployment validation and
+          # post-rollback recovery verification. The purpose only changes reporting and
+          # manifest paths; the underlying health check stays the same.
+          if [ "${{ inputs.probe_purpose }}" = "rollback_verification" ]; then
+            echo "success_artifact_name=successful-rollback-verification-manifests-${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "failure_artifact_name=failed-rollback-verification-manifests-${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "bucket_prefix_root=${{ inputs.project_name }}/rollback-verifications/${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "summary_heading=Rollback Recovery Verification" >> "$GITHUB_OUTPUT"
+            echo "summary_slug=rollback-verification" >> "$GITHUB_OUTPUT"
+          else
+            echo "success_artifact_name=successful-deployment-manifests-${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "failure_artifact_name=failed-deployment-manifests-${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "bucket_prefix_root=${{ inputs.project_name }}/deployments/${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "summary_heading=Deployment Validation" >> "$GITHUB_OUTPUT"
+            echo "summary_slug=deployment" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run probe task in private subnets
+        id: run-probe
+        uses: ./.github/actions/ecs-run-task-awsvpc
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
+          launch_type: FARGATE
+          # The reusable probe workflow keeps awsvpc-specific network lookup inside the awsvpc
+          # action so the workflow itself only needs to describe the desired frontend-facing network.
+          security_group_name: ecs-node-frontend-sg-${{ inputs.env_var }}
+          subnet_tag_values: pri-sub-3a,pri-sub-4b
+          assign_public_ip: DISABLED
+
+      - name: Wait for probe task result
+        id: probe-result
+        uses: ./.github/actions/ecs-wait-task-result
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          task_arn: ${{ steps.run-probe.outputs.task_arn }}
+          task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
+          log_file: probe-logs-${{ inputs.environment }}.txt
+          fetch_logs: true
+          fail_on_nonzero_exit: true
+
+      - name: Download deployment metadata artifacts
+        if: ${{ always() }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deploy-metadata-*-${{ inputs.environment }}
+          path: deploy-metadata
+          merge-multiple: true
+
+      - name: Prepare success manifest workspace
+        if: ${{ success() }}
+        id: success-manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p manifests/success
+          SUMMARY_FILE="manifests/success/${{ steps.probe-config.outputs.summary_slug }}-summary-${{ inputs.environment }}.md"
+          touch "$SUMMARY_FILE"
+          echo "summary_file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Update deployment pointers after probe success
+        if: ${{ success() && inputs.update_pointers_on_success }}
+        uses: ./.github/actions/deployment-pointer-write-batch
+        with:
+          metadata_glob: deploy-metadata/deploy-metadata-*-${{ inputs.environment }}.json
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+
+      - name: Persist successful deployment state and manifests
+        if: ${{ success() }}
+        uses: ./.github/actions/deployment-manifest-write-batch
+        with:
+          metadata_glob: deploy-metadata/deploy-metadata-*-${{ inputs.environment }}.json
+          manifest_dir: manifests/success
+          bucket: ${{ inputs.manifest_bucket }}
+          bucket_prefix_root: ${{ steps.probe-config.outputs.bucket_prefix_root }}
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          status: successful
+          reason: ${{ steps.probe-result.outputs.result_reason }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          summary_file: ${{ steps.success-manifests.outputs.summary_file }}
+
+      - name: Upload successful deployment manifests
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.probe-config.outputs.success_artifact_name }}
+          path: manifests/success
+          if-no-files-found: error
+
+      - name: Publish deployment summary to job summary
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          # Job summaries are a lighter-weight place to iterate on deployment reporting:
+          # they stay attached to the workflow run without adding PR noise while the
+          # rollout, probe, and rollback flow is still being refined.
+          cat "${{ steps.success-manifests.outputs.summary_file }}" >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "## ${{ steps.probe-config.outputs.summary_heading }} Context"
+            echo "- Workflow: \`${{ github.workflow }}\`"
+            echo "- Run ID: \`${{ github.run_id }}\`"
+            echo "- Actor: \`${{ github.actor }}\`"
+            echo "- Commit SHA: \`${{ github.sha }}\`"
+            echo "- Environment: \`${{ inputs.environment }}\`"
+            echo "- Probe reason: ${{ steps.probe-result.outputs.result_reason }}"
+            echo "- Manifest artifact: \`${{ steps.probe-config.outputs.success_artifact_name }}\`"
+            echo "- Manifest bucket: \`${{ inputs.manifest_bucket }}\`"
+            echo "- Advances deployment pointers: \`${{ inputs.update_pointers_on_success }}\`"
+            echo
+            echo "### Probe Log Artifact"
+            echo "- Probe log file: \`${{ steps.probe-result.outputs.log_file }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Persist failed deployment manifests
+        if: ${{ failure() }}
+        uses: ./.github/actions/deployment-manifest-write-batch
+        with:
+          metadata_glob: deploy-metadata/deploy-metadata-*-${{ inputs.environment }}.json
+          manifest_dir: manifests/failure
+          bucket: ${{ inputs.manifest_bucket }}
+          bucket_prefix_root: ${{ steps.probe-config.outputs.bucket_prefix_root }}
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          status: failed
+          reason: ${{ steps.probe-result.outputs.result_reason }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+
+      - name: Upload failed deployment manifests
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.probe-config.outputs.failure_artifact_name }}
+          path: manifests/failure
+          if-no-files-found: error
+
+      - name: Capture probe workflow output contract
+        if: ${{ always() }}
+        id: probe-contract
+        shell: bash
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "probe_status=successful" >> "$GITHUB_OUTPUT"
+            echo "manifest_artifact_name=${{ steps.probe-config.outputs.success_artifact_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe_status=failed" >> "$GITHUB_OUTPUT"
+            echo "manifest_artifact_name=${{ steps.probe-config.outputs.failure_artifact_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "probe_reason=${{ steps.probe-result.outputs.result_reason }}" >> "$GITHUB_OUTPUT"

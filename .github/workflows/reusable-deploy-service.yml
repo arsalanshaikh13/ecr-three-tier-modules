@@ -1,0 +1,183 @@
+name: Reusable Deploy Service
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name used for vars, approvals, and deployment targeting."
+        required: true
+        type: string
+      component:
+        description: "Application component being deployed, for example frontend or backend."
+        required: true
+        type: string
+      project_name:
+        description: "Project name prefix used in ECS/ECR naming."
+        required: true
+        type: string
+      env_var:
+        description: "Short environment suffix used in AWS resource names, for example dev or prod."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the target environment."
+        required: true
+        type: string
+      aws_account_id:
+        description: "AWS account id used to construct the OIDC role ARN."
+        required: true
+        type: string
+      build_image:
+        description: "Whether this deploy should build and push a fresh image."
+        required: true
+        type: boolean
+      fetch_image:
+        description: "Whether this deploy should reuse the most recently pushed image from ECR."
+        required: true
+        type: boolean
+      service_network_mode:
+        description: "Service network mode for deployment execution. Supported values are non-awsvpc and awsvpc."
+        required: false
+        type: string
+        default: non-awsvpc
+      security_group_name:
+        description: "Optional awsvpc security group name to resolve when service_network_mode is awsvpc."
+        required: false
+        type: string
+      subnet_tag_values:
+        description: "Optional awsvpc subnet Name tag values when service_network_mode is awsvpc."
+        required: false
+        type: string
+      assign_public_ip:
+        description: "Whether awsvpc service updates should assign a public IP."
+        required: false
+        type: string
+        default: DISABLED
+    outputs:
+      environment:
+        description: "Environment that received the deployment."
+        value: ${{ jobs.deploy-service.outputs.environment }}
+      component:
+        description: "Component that was deployed."
+        value: ${{ jobs.deploy-service.outputs.component }}
+      cluster:
+        description: "ECS cluster targeted by the deployment."
+        value: ${{ jobs.deploy-service.outputs.cluster }}
+      service:
+        description: "ECS service updated by the deployment."
+        value: ${{ jobs.deploy-service.outputs.service }}
+      task_definition_arn:
+        description: "Newly registered task definition ARN used for the deployment."
+        value: ${{ jobs.deploy-service.outputs.task_definition_arn }}
+      previous_task_definition_arn:
+        description: "Task definition ARN that the service used before this deployment."
+        value: ${{ jobs.deploy-service.outputs.previous_task_definition_arn }}
+      image_uri:
+        description: "Image URI baked into the deployed task definition."
+        value: ${{ jobs.deploy-service.outputs.image_uri }}
+      metadata_artifact_name:
+        description: "Artifact name containing deployment metadata for downstream workflows."
+        value: ${{ jobs.deploy-service.outputs.metadata_artifact_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-service:
+    name: Deploy ${{ inputs.component }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      # Expose a stable workflow-level contract so callers can compose deploy/probe/rollback
+      # without needing to know which internal step produced a given deployment identifier.
+      environment: ${{ inputs.environment }}
+      component: ${{ inputs.component }}
+      cluster: ${{ env.ECS_CLUSTER }}
+      service: ${{ inputs.component }}-service
+      task_definition_arn: ${{ steps.prepare-task-def.outputs.task_definition_arn }}
+      previous_task_definition_arn: ${{ steps.prepare-task-def.outputs.current_task_definition_arn }}
+      image_uri: ${{ steps.prepare-task-def.outputs.image }}
+      metadata_artifact_name: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}
+    # Keep the environment on the reusable workflow job so approvals and environment-scoped
+    # vars stay attached to the deployment unit instead of the caller needing to duplicate them.
+    environment: ${{ inputs.environment }}
+    env:
+      ECS_CLUSTER: ${{ inputs.project_name }}-cluster-${{ inputs.env_var }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Prepare task definition up to registration
+        id: prepare-task-def
+        uses: ./.github/actions/ecs-prepare-task-definition
+        with:
+          workdir: lirw-three-tier/${{ inputs.component }}
+          ecr_repository: ${{ inputs.project_name }}-${{ inputs.component }}-repo-${{ inputs.env_var }}
+          image_tag: ${{ github.sha }}
+          additional_tag: latest
+          build_image: ${{ inputs.build_image }}
+          fetch_image: ${{ inputs.fetch_image }}
+          task_definition_name: ${{ inputs.project_name }}-${{ inputs.component }}
+          task_definition_output_path: task-definition-${{ inputs.component }}.json
+          container_name: ${{ inputs.project_name }}_${{ inputs.component }}
+
+      - name: Persist deployment metadata for later jobs
+        shell: bash
+        run: |
+          # Persist deploy metadata once during deployment so probe and rollback jobs can consume
+          # the same identifiers instead of rediscovering mutable ECS state later on.
+          cat > deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json <<EOF
+          {
+            "component": "${{ inputs.component }}",
+            "environment": "${{ inputs.environment }}",
+            "cluster": "${{ env.ECS_CLUSTER }}",
+            "service": "${{ inputs.component }}-service",
+            "previousTaskDefinitionArn": "${{ steps.prepare-task-def.outputs.current_task_definition_arn }}",
+            "newTaskDefinitionArn": "${{ steps.prepare-task-def.outputs.task_definition_arn }}",
+            "imageUri": "${{ steps.prepare-task-def.outputs.image }}",
+            "commitSha": "${{ github.sha }}",
+            "workflowRunId": "${{ github.run_id }}"
+          }
+          EOF
+
+      - name: Upload deployment metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}
+          path: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json
+          if-no-files-found: error
+
+      - name: Update ECS service to new task definition (non-awsvpc)
+        if: ${{ inputs.service_network_mode != 'awsvpc' }}
+        uses: ./.github/actions/ecs-run-task
+        with:
+          run_mode: service
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.component }}-service
+          task_definition: ${{ steps.prepare-task-def.outputs.task_definition_arn }}
+          # Non-awsvpc services reuse the same execution boundary as task mode: the caller only
+          # chooses service vs one-off task, while the action owns the ECS API call.
+          force_new_deployment: true
+
+      - name: Update ECS service to new task definition (awsvpc)
+        if: ${{ inputs.service_network_mode == 'awsvpc' }}
+        uses: ./.github/actions/ecs-run-task-awsvpc
+        with:
+          run_mode: service
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ inputs.component }}-service
+          task_definition: ${{ steps.prepare-task-def.outputs.task_definition_arn }}
+          # The reusable workflow stays generic here: the caller decides whether a target
+          # environment uses awsvpc and passes the environment-specific lookup values in.
+          # The awsvpc runner action then resolves the actual IDs and updates the service.
+          security_group_name: ${{ inputs.security_group_name }}
+          subnet_tag_values: ${{ inputs.subnet_tag_values }}
+          assign_public_ip: ${{ inputs.assign_public_ip }}
+          force_new_deployment: true
