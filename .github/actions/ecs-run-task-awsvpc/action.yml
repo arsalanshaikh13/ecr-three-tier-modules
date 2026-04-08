@@ -87,6 +87,8 @@ runs:
         if [ -z "$SECURITY_GROUP_ID" ]; then
           SECURITY_GROUP_ID="${{ steps.lookup-network.outputs.security_group_id }}"
         fi
+        echo "subnetidjson $SUBNET_IDS_JSON"
+        echo "security group $SECURITY_GROUP_ID "
 
         case "${ASSIGN_PUBLIC_IP^^}" in
           ENABLED|TRUE)
@@ -167,7 +169,7 @@ runs:
               --cluster "${{ inputs.cluster }}" \
               --task-definition "${{ inputs.task_definition }}" \
               --launch-type "${{ inputs.launch_type }}" \
-              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ inputs.subnet_ids_json }},"securityGroups":["${{ inputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
+              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":[${{ steps.resolve-network.outputs.security_group_id }}],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
               --query "tasks[0].taskArn" \
               --output text)
 
