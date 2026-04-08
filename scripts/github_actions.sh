@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "in deploy.yml making all probe task to use FARGATE and awsvpc"
+git commit -m "change network mode to bridge "
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
