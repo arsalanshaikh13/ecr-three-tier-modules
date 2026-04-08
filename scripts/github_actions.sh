@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "updated setup.sh file for running on different env"
+git commit -m "testing auto-rollback"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -98,23 +98,23 @@ fi
 # sleep 3
 
 # # Fetch both internal run ID and human-readable run number for the latest dispatch after START_TS.
-RUN_ID=$(gh run list \
-  --repo "$GH_USER/$REPO_NAME" \
-  --workflow "deploy.yml" \
-  --branch multi-env-actions \
-  --event workflow_dispatch \
-  --limit 20 \
-  --json databaseId,number,createdAt \
-  --jq "map(select(.createdAt >= \"$START_TS\")) | first | .databaseId")
+# RUN_ID=$(gh run list \
+#   --repo "$GH_USER/$REPO_NAME" \
+#   --workflow "deploy.yml" \
+#   --branch multi-env-actions \
+#   --event workflow_dispatch \
+#   --limit 20 \
+#   --json databaseId,number,createdAt \
+#   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .databaseId")
 
-RUN_NO=$(gh run list \
-  --repo "$GH_USER/$REPO_NAME" \
-  --workflow "deploy.yml" \
-  --branch multi-env-actions \
-  --event workflow_dispatch \
-  --limit 20 \
-  --json number,createdAt \
-  --jq "map(select(.createdAt >= \"$START_TS\")) | first | .number")
+# RUN_NO=$(gh run list \
+#   --repo "$GH_USER/$REPO_NAME" \
+#   --workflow "deploy.yml" \
+#   --branch multi-env-actions \
+#   --event workflow_dispatch \
+#   --limit 20 \
+#   --json number,createdAt \
+#   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .number")
 
 echo "Triggered deploy workflow: RUN_ID=$RUN_ID RUN_NO=$RUN_NO"
 if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
