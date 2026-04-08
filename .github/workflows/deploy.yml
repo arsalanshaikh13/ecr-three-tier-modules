@@ -293,8 +293,9 @@ jobs:
       # reuse that image instead of rebuilding it every time.
       build_image: true
       fetch_image: false
-      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
-      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
+      # keep launch type for probe FARGATE because EC2 based probe takes too much time stop
+      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || 'FARGATE' }}
+      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || 'awsvpc' }}
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -341,8 +342,9 @@ jobs:
       # probe image. Fetch-only keeps this path fast and avoids mutating probe artifacts.
       build_image: true
       fetch_image: false
-      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
-      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
+      # keep launch type for probe FARGATE because EC2 based probe takes too much time stop
+      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || 'FARGATE' }}
+      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || 'awsvpc' }}
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -383,8 +385,9 @@ jobs:
       # Manual rollback recovery follows the same fetch-only probe rule as auto rollback.
       build_image: false
       fetch_image: true
-      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
-      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
+      # keep launch type for probe FARGATE because EC2 based probe takes too much time stop
+      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || 'FARGATE' }}
+      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || 'awsvpc' }}
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit

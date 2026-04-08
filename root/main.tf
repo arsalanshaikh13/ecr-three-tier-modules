@@ -227,7 +227,8 @@ module "lb" {
 
 module "ecs_ec2" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecs_ec2"
-  version = "0.1.11-probe-ec2-non-awsvpc-tag"
+  # keep probe task in fargate only because in ec2 it takes too long to stop
+  version = "0.1.11-probe-ec2-fargate-tag"
   # version = "0.0.2-non-awsvpc"
   # backend_api_name           = var.backend_api_name
   backend_api_name           = "api-${local.env_suffix}.${var.domain_name}"

@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "in root/main.tf ecs_ec2 now have probe with EC2 instance non-awsvpc network"
+git commit -m "in root/main.tf ecs_ec2 now have probe with Fargate back because ec2 based probe task takes too much time to stop"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
