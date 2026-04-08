@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "added the option for default launch type and default network mode to switch between networks and launch type easily"
+git commit -m "changed build_image to true and fetch_image to false for using EC2 as launch type for probe job"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -53,11 +53,11 @@ if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
   -f action_type=deploy \
   -f target_environment=dev \
-  -f build_frontend=false \
-  -f get_frontend=true \
-  -f build_backend=false \
-  -f get_backend=true \
-  -f run_seeding=false \
+  -f build_frontend=true \
+  -f get_frontend=false \
+  -f build_backend=true \
+  -f get_backend=false \
+  -f run_seeding=true \
   -f default_network_mode=non-awsvpc \
   -f default_launch_type=EC2; then
   echo "Failed to dispatch deploy.yml."

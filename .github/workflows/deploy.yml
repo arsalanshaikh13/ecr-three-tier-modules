@@ -292,7 +292,7 @@ jobs:
       # fetch-first strategy so the first probe can self-seed ECR and later probes
       # reuse that image instead of rebuilding it every time.
       build_image: true
-      fetch_image: true
+      fetch_image: false
       probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
       probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
     secrets: inherit
@@ -339,8 +339,8 @@ jobs:
       project_name: ${{ vars.PROJECT_NAME }}
       # Rollback verification should only validate recovery using the already-published
       # probe image. Fetch-only keeps this path fast and avoids mutating probe artifacts.
-      build_image: false
-      fetch_image: true
+      build_image: true
+      fetch_image: false
       probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
       probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
       update_pointers_on_success: false
