@@ -81,7 +81,7 @@ runs:
         ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
         if [ -z "$SUBNET_IDS_JSON" ]; then
-          SUBNET_IDS_JSON="${{ steps.lookup-network.outputs.subnet_ids_json }}"
+          SUBNET_IDS_JSON=${{ steps.lookup-network.outputs.subnet_ids_json }}
         fi
 
         if [ -z "$SECURITY_GROUP_ID" ]; then
