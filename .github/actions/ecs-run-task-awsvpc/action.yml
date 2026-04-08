@@ -76,12 +76,13 @@ runs:
         # Callers can either pass concrete IDs directly or let this action resolve them from
         # the awsvpc-specific lookup inputs. Keeping both paths makes the action reusable across
         # tightly controlled workflows and more generic callers.
-        SUBNET_IDS_JSON="${{ inputs.subnet_ids_json }}"
+        SUBNET_IDS_JSON='${{ inputs.subnet_ids_json }}'
         SECURITY_GROUP_ID="${{ inputs.security_group_id }}"
         ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
         if [ -z "$SUBNET_IDS_JSON" ]; then
-          SUBNET_IDS_JSON=${{ steps.lookup-network.outputs.subnet_ids_json }}
+          # preserve array of string using literal quotes ''
+          SUBNET_IDS_JSON='${{ steps.lookup-network.outputs.subnet_ids_json }}'
         fi
 
         if [ -z "$SECURITY_GROUP_ID" ]; then
@@ -169,7 +170,7 @@ runs:
               --cluster "${{ inputs.cluster }}" \
               --task-definition "${{ inputs.task_definition }}" \
               --launch-type "${{ inputs.launch_type }}" \
-              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":[${{ steps.resolve-network.outputs.security_group_id }}],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
+              --network-configuration '{"awsvpcConfiguration":{"subnets":${{ steps.resolve-network.outputs.subnet_ids_json }},"securityGroups":["${{ steps.resolve-network.outputs.security_group_id }}"],"assignPublicIp":"${{ inputs.assign_public_ip }}"}}' \
               --query "tasks[0].taskArn" \
               --output text)
 
