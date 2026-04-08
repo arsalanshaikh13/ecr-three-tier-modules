@@ -293,9 +293,11 @@ jobs:
       # reuse that image instead of rebuilding it every time.
       build_image: true
       fetch_image: false
-      # keep launch type for probe FARGATE because EC2 based probe takes too much time stop
-      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || 'FARGATE' }}
-      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || 'awsvpc' }}
+      # EC2 based probes take too long to stop
+      # Keep all probe-style jobs on the faster-stop Fargate/awsvpc path instead of
+      # inheriting broader workflow defaults that are better suited to long-lived services.
+      probe_launch_type: FARGATE
+      probe_network_mode: awsvpc
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -340,11 +342,11 @@ jobs:
       project_name: ${{ vars.PROJECT_NAME }}
       # Rollback verification should only validate recovery using the already-published
       # probe image. Fetch-only keeps this path fast and avoids mutating probe artifacts.
-      build_image: true
-      fetch_image: false
-      # keep launch type for probe FARGATE because EC2 based probe takes too much time stop
-      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || 'FARGATE' }}
-      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || 'awsvpc' }}
+      build_image: false
+      fetch_image: true
+      # Recovery verification should use the same fast probe runtime as normal validation.
+      probe_launch_type: FARGATE
+      probe_network_mode: awsvpc
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -385,9 +387,9 @@ jobs:
       # Manual rollback recovery follows the same fetch-only probe rule as auto rollback.
       build_image: false
       fetch_image: true
-      # keep launch type for probe FARGATE because EC2 based probe takes too much time stop
-      probe_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || 'FARGATE' }}
-      probe_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || 'awsvpc' }}
+      # Manual rollback verification should use the same fast probe runtime as normal validation.
+      probe_launch_type: FARGATE
+      probe_network_mode: awsvpc
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit

@@ -23,12 +23,12 @@ on:
         description: "Optional probe execution network mode override. Supported values are non-awsvpc and awsvpc."
         required: false
         type: string
-        default: ""
+        default: "awsvpc"
       probe_launch_type:
         description: "Optional probe launch type override. Supported values are EC2 and FARGATE."
         required: false
         type: string
-        default: ""
+        default: "FARGATE"
       probe_security_group_name:
         description: "Optional awsvpc security group name override for probe execution."
         required: false
