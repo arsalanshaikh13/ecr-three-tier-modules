@@ -35,7 +35,7 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-git commit -m "for prod kept host network "
+git commit -m "for prod switched to bridge network "
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -95,7 +95,7 @@ curl --fail-with-body -X POST \
       "source_environment": "dev",
       "promote_frontend": "true",
       "promote_backend": "true",
-      "run_seeding_in_prod": "true",
+      "run_seeding_in_prod": "false",
       "default_network_mode": "non-awsvpc",
       "default_launch_type": "EC2"
     }
