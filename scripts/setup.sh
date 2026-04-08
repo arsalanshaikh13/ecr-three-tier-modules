@@ -20,6 +20,7 @@ apply_environment() {
 
   # Keep each apply fully environment-scoped so dev and prod continue to use their own
   # tfvars and state files even when the caller asks for both in one run.
+  # terraform plan -var-file="$tfvars_file" -state="$state_file"
   terraform apply -var-file="$tfvars_file" -state="$state_file" -parallelism=20 -auto-approve
   echo ""
 }

@@ -36,7 +36,7 @@ REPO_NAME="ecr-three-tier-modules"
 # git status
 git add .; 
 # git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "rollback manual testing "
+git commit -m "switching to FARGATE mode for prod and dev "
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
@@ -52,15 +52,15 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # has an older workflow definition registered by GitHub.
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
-  -f action_type=rollback \
-  -f target_environment=prod \
+  -f action_type=deploy \
+  -f target_environment=all \
   -f build_frontend=true \
   -f get_frontend=false \
   -f build_backend=true \
   -f get_backend=false \
   -f run_seeding=true \
-  -f default_network_mode=non-awsvpc \
-  -f default_launch_type=EC2; then
+  -f default_network_mode=awsvpc \
+  -f default_launch_type=FARGATE; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
   exit 1

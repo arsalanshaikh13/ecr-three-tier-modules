@@ -161,4 +161,5 @@ esac
 
 
 # terraform destroy -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
-# terraform apply -var-file=dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
+# terraform apply -var-file=tfvars/dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
+terraform apply -var-file=tfvars/dev.tfvars -target=module.lb.aws_lb_listener.app_listener_https_secure -target=module.lb.aws_lb_listener.backend_listener
