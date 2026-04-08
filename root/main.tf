@@ -51,7 +51,8 @@ module "sg" {
 
 module "iam" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//iam"
-  version = "0.0.14-iam-env"
+  version = "0.1.14-iam-env"
+  # version = "0.0.14-iam-env"
   # version = "0.0.7-nat-instance"
   account_id              = var.account_id
   region                  = var.region

@@ -36,7 +36,7 @@ REPO_NAME="ecr-three-tier-modules"
 # git status
 git add .; 
 # git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "providing fallback in seed database and deploy service workflow for subnet ids and security group providing empty values from deploy.yml for subnet and security group"
+git commit -m "changed iam permission to allow ecr task to access ssm"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
