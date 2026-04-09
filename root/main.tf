@@ -158,8 +158,8 @@ module "route53" {
 
 module "asg" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//asg"
-  version = "0.0.8-private-subnet"
-  # version = "0.0.9-public-subnet"
+  version = "0.1.18-private-sub-asg-tag"
+  # version = "0.1.19-public-sub-asg-tag"
   back_asg_desired_capacity  = var.back_asg_desired_capacity
   back_asg_max_size          = var.back_asg_max_size
   back_asg_min_size          = var.back_asg_min_size
