@@ -36,7 +36,7 @@ REPO_NAME="ecr-three-tier-modules"
 # git status
 git add .; 
 # git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "switch ecs_ec2 with asg from fargate"
+git commit -m "change network mode to host "
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public
