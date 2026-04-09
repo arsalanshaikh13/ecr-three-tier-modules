@@ -8,6 +8,7 @@ if [[ "$TARGET" != "dev" && "$TARGET" != "prod" && "$TARGET" != "all" ]]; then
   exit 1
 fi
 
+
 apply_environment() {
   local environment="$1"
   local tfvars_file="tfvars/${environment}.tfvars"
@@ -26,6 +27,8 @@ apply_environment() {
 }
 
 cd root
+terraform destroy -var-file=tfvars/dev.tfvars -state=state/dev.tfstate -target="module.lb.aws_lb_listener.backend_listener" -target="module.lb.aws_lb_listener.app_listener_https_secure" -auto-approve
+terraform destroy -var-file=tfvars/prod.tfvars -state=state/prod.tfstate -target="module.lb.aws_lb_listener.backend_listener" -target="module.lb.aws_lb_listener.app_listener_https_secure" -auto-approve
 
 terraform init
 

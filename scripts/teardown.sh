@@ -145,17 +145,6 @@ run_teardown() {
     sleep 10
   done
 
-  echo ""
-  echo "5. Force deleting ECS services..."
-  for service_name in "${SERVICES[@]}"; do
-    echo "   Deleting $service_name"
-    aws ecs delete-service \
-      --cluster "$cluster_name" \
-      --service "$service_name" \
-      --region "$region" \
-      --force \
-      --no-cli-pager >/dev/null 2>&1 || true
-  done
 
   echo ""
   echo "6. Triggering Terraform destroy for $env_name..."
@@ -186,3 +175,6 @@ case "$ENV_ARG" in
     exit 1
     ;;
 esac
+
+terraform destroy -vars=tfvars/dev.tfvars -state=state/dev.tfstate target="module.lb.aws_lb_listener.backend_listener" -target="module.lb.aws_lb_listener.app_listener_https_secure"
+terraform destroy -vars=tfvars/prod.tfvars -state=state/prod.tfstate target="module.lb.aws_lb_listener.backend_listener" -target="module.lb.aws_lb_listener.app_listener_https_secure"
