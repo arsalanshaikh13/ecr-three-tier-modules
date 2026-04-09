@@ -35,11 +35,11 @@ REPO_NAME="ecr-three-tier-modules"
 # ROOT_DIR="${SCRIPT_DIR}/../.github/workflows/deploy.yml"
 # git status
 git add .; 
-# git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "make ecs-run-task and ecs-run-task-awsvpc accept region for multi region multi-env setup"
+# # git commit -m "for switching both dev and prod to FARGATE "
+git commit -m "host mode setup complete"
 git push   ;
-# git tag tf-module-ec2-host-public
-# git push origin tf-module-ec2-host-public
+git tag host-mode-workflow
+git push origin host-mode-workflow
 
 # git tag -l "lirw-*" | xargs -I {} git push origin --delete {}
 # git tag -l "lirw-*" | xargs git tag -d
@@ -50,21 +50,21 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # Fail immediately if GitHub cannot dispatch the workflow. If this returns HTTP 422
 # while the branch file has workflow_dispatch, the default/main branch likely still
 # has an older workflow definition registered by GitHub.
-if ! gh workflow run "deploy.yml" \
-  --ref multi-env-actions \
-  -f action_type=deploy \
-  -f target_environment=all \
-  -f build_frontend=true \
-  -f get_frontend=false \
-  -f build_backend=true \
-  -f get_backend=false \
-  -f run_seeding=true \
-  -f default_network_mode=non-awsvpc \
-  -f default_launch_type=EC2; then
-  echo "Failed to dispatch deploy.yml."
-  echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
-  exit 1
-fi
+# if ! gh workflow run "deploy.yml" \
+#   --ref multi-env-actions \
+#   -f action_type=rollback \
+#   -f target_environment=prod \
+#   -f build_frontend=true \
+#   -f get_frontend=false \
+#   -f build_backend=true \
+#   -f get_backend=false \
+#   -f run_seeding=true \
+#   -f default_network_mode=non-awsvpc \
+#   -f default_launch_type=EC2; then
+#   echo "Failed to dispatch deploy.yml."
+#   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
+#   exit 1
+# fi
 
 # curl --fail-with-body -X POST \
 #   -H "Authorization: token $(gh auth token)" \

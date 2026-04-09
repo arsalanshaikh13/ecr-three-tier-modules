@@ -45,8 +45,9 @@ runs:
 
         # Prefer an explicit caller-provided region so reusable workflows can make their
         # region intent visible at the call site, while still preserving env-based fallback.
-        AWS_REGION_INPUT="${{ inputs.aws_region }}"
-        AWS_REGION_RESOLVED="${AWS_REGION_INPUT:-${AWS_REGION:-${AWS_DEFAULT_REGION:-}}}"
+        AWS_REGION_RESOLVED="${{ inputs.aws_region }}"
+        # AWS_REGION_INPUT="${{ inputs.aws_region }}"
+        # AWS_REGION_RESOLVED="${AWS_REGION_INPUT:-${AWS_REGION:-${AWS_DEFAULT_REGION:-}}}"
 
         if [ -z "$AWS_REGION_RESOLVED" ]; then
           echo "Error: aws_region input or AWS_REGION/AWS_DEFAULT_REGION environment variable is required."
