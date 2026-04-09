@@ -36,8 +36,8 @@ module "nat_instance" {
 
 module "sg" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//sg"
-  # version = "0.0.3-bridge" # making bridge network specific change
-  version = "0.0.4-host" # making host network specific change
+  version = "0.0.3-bridge" # making bridge network specific change
+  # version = "0.0.4-host" # making host network specific change
   backend_alb_port  = var.backend_alb_port
   backend_tg_port   = var.backend_tg_port
   common_tags       = local.common_tags
@@ -197,8 +197,9 @@ module "asg" {
 module "lb" {
   # 1. Native Terraform registry path 
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//lb"
+  version = "0.0.17-lb-tg-instance-private"
   # version = "0.1.16-lb-tg-ip-private-subnet"
-  version = "0.0.8-private-subnet"
+  # version = "0.0.8-private-subnet"
   # version = "0.0.9-public-subnet"
   backend_alb_port           = var.backend_alb_port
   backend_alb_protocol       = var.backend_alb_protocol
