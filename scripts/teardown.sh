@@ -176,5 +176,3 @@ case "$ENV_ARG" in
     ;;
 esac
 
-terraform destroy -vars=tfvars/dev.tfvars -state=state/dev.tfstate target="module.lb.aws_lb_listener.backend_listener" -target="module.lb.aws_lb_listener.app_listener_https_secure"
-terraform destroy -vars=tfvars/prod.tfvars -state=state/prod.tfstate target="module.lb.aws_lb_listener.backend_listener" -target="module.lb.aws_lb_listener.app_listener_https_secure"

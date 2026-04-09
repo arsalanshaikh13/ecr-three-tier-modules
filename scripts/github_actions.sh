@@ -36,7 +36,7 @@ REPO_NAME="ecr-three-tier-modules"
 # git status
 git add .; 
 # # git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "awsvpc mode specific changes made sg module, tfvars file for both environment "
+git commit -m "fargate mode specific changes made in ecs_fargate, efs, lb both environment "
 git push   ;
 # git tag host-mode-workflow
 # git push origin host-mode-workflow
@@ -60,7 +60,7 @@ if ! gh workflow run "deploy.yml" \
   -f get_backend=false \
   -f run_seeding=true \
   -f default_network_mode=awsvpc \
-  -f default_launch_type=EC2; then
+  -f default_launch_type=FARGATE; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
   exit 1

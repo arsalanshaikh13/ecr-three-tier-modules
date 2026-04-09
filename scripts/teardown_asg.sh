@@ -78,6 +78,7 @@ while true; do
     if [ "$RUNNING_TASKS" -gt 0 ]; then
       echo "   ⏳ $SERVICE_NAME still has $RUNNING_TASKS task(s) running..."
       ALL_SERVICES_DOWN=false
+      
     fi
   done
 
