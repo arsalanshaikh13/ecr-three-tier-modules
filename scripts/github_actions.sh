@@ -53,7 +53,7 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 if ! gh workflow run "deploy.yml" \
   --ref multi-env-actions \
   -f action_type=deploy \
-  -f target_environment=dev \
+  -f target_environment=all \
   -f build_frontend=true \
   -f get_frontend=false \
   -f build_backend=true \
