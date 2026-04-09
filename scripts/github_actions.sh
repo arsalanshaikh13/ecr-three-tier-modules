@@ -36,7 +36,7 @@ REPO_NAME="ecr-three-tier-modules"
 # git status
 git add .; 
 # git commit -m "for switching both dev and prod to FARGATE "
-git commit -m "change network mode to host "
+git commit -m "make ecs-run-task and ecs-run-task-awsvpc accept region for multi region multi-env setup"
 git push   ;
 # git tag tf-module-ec2-host-public
 # git push origin tf-module-ec2-host-public

@@ -212,6 +212,7 @@ jobs:
         uses: ./.github/actions/ecs-rollback-service
         with:
           cluster: ${{ env.ECS_CLUSTER }}
+          aws_region: ${{ vars.AWS_REGION }}
           service: ${{ inputs.component }}-service
           task_definition: ${{ steps.manual-rollback-target.outputs.task_definition_arn }}
           service_launch_type: ${{ steps.rollback-execution.outputs.launch_type }}

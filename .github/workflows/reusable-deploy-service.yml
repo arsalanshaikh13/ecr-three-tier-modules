@@ -186,6 +186,7 @@ jobs:
         with:
           run_mode: service
           cluster: ${{ env.ECS_CLUSTER }}
+          aws_region: ${{ vars.AWS_REGION }}
           service: ${{ inputs.component }}-service
           task_definition: ${{ steps.prepare-task-def.outputs.task_definition_arn }}
           # Non-awsvpc services reuse the same execution boundary as task mode: the caller only
@@ -198,6 +199,7 @@ jobs:
         with:
           run_mode: service
           cluster: ${{ env.ECS_CLUSTER }}
+          aws_region: ${{ vars.AWS_REGION }}
           service: ${{ inputs.component }}-service
           task_definition: ${{ steps.prepare-task-def.outputs.task_definition_arn }}
           # The reusable workflow stays generic here: the caller decides whether a target

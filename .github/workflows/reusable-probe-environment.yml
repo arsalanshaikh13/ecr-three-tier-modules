@@ -190,6 +190,7 @@ jobs:
         uses: ./.github/actions/ecs-run-task
         with:
           cluster: ${{ env.ECS_CLUSTER }}
+          aws_region: ${{ vars.AWS_REGION }}
           task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
           # Probe can now execute on EC2 non-awsvpc just like seeding when the target
           # environment wants bridge/host networking instead of Fargate-style awsvpc.
@@ -201,6 +202,7 @@ jobs:
         uses: ./.github/actions/ecs-run-task-awsvpc
         with:
           cluster: ${{ env.ECS_CLUSTER }}
+          aws_region: ${{ vars.AWS_REGION }}
           task_definition: ${{ steps.prepare-probe-task-def.outputs.task_definition_arn }}
           launch_type: ${{ steps.probe-execution.outputs.launch_type }}
           # The reusable probe workflow keeps awsvpc-specific network lookup inside the awsvpc

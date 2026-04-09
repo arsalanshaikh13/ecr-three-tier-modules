@@ -5,6 +5,9 @@ inputs:
   cluster:
     description: ECS cluster name or ARN.
     required: true
+  aws_region:
+    description: AWS region for rollback ECS API calls.
+    required: false
   service:
     description: ECS service name to roll back.
     required: true
@@ -51,6 +54,7 @@ runs:
       with:
         run_mode: service
         cluster: ${{ inputs.cluster }}
+        aws_region: ${{ inputs.aws_region }}
         service: ${{ inputs.service }}
         task_definition: ${{ inputs.task_definition }}
         # Rollback is still a service update under the hood. The non-awsvpc runner action
@@ -63,6 +67,7 @@ runs:
       with:
         run_mode: service
         cluster: ${{ inputs.cluster }}
+        aws_region: ${{ inputs.aws_region }}
         service: ${{ inputs.service }}
         task_definition: ${{ inputs.task_definition }}
         # Fargate and EC2 awsvpc services both use the awsvpc execution path. The awsvpc

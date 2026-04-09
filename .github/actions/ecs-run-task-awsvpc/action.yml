@@ -9,6 +9,9 @@ inputs:
   cluster:
     description: ECS cluster name or ARN.
     required: true
+  aws_region:
+    description: AWS region for ECS API calls. Falls back to AWS_REGION or AWS_DEFAULT_REGION when omitted.
+    required: false
   task_definition:
     description: Task definition ARN or family:revision to run or attach to a service.
     required: true
@@ -101,6 +104,16 @@ runs:
       run: |
         set -euo pipefail
 
+        # Prefer an explicit caller-provided region so reusable workflows can make their
+        # region intent visible at the call site, while still preserving env-based fallback.
+        AWS_REGION_RESOLVED="${{ inputs.aws_region }}"
+        # AWS_REGION_RESOLVED="${AWS_REGION_INPUT:-${AWS_REGION:-${AWS_DEFAULT_REGION:-}}}"
+
+        if [ -z "$AWS_REGION_RESOLVED" ]; then
+          echo "Error: aws_region input or AWS_REGION/AWS_DEFAULT_REGION environment variable is required."
+          exit 1
+        fi
+
         case "${{ inputs.run_mode }}" in
           service)
             # In service mode, awsvpc services may still need their network configuration updated
@@ -130,7 +143,7 @@ runs:
               )
             fi
 
-            aws ecs update-service "${UPDATE_ARGS[@]}" >/dev/null
+            aws ecs update-service --region "$AWS_REGION_RESOLVED" "${UPDATE_ARGS[@]}" >/dev/null
             echo "service=${{ inputs.service }}" >> "$GITHUB_OUTPUT"
             echo "task_arn=" >> "$GITHUB_OUTPUT"
             ;;
@@ -144,6 +157,7 @@ runs:
             fi
 
             TASK_ARN=$(aws ecs run-task \
+              --region "$AWS_REGION_RESOLVED" \
               --cluster "${{ inputs.cluster }}" \
               --task-definition "${{ inputs.task_definition }}" \
               --launch-type "${{ inputs.launch_type }}" \
