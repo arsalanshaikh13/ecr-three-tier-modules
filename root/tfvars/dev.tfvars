@@ -60,9 +60,9 @@ frontend_health_check_path = "/health"
 
 # ECS Configuration
 launch_type               = "EC2"
-ecs_network_mode_db       = "bridge"
-ecs_network_mode_frontend = "bridge"
-ecs_network_mode_backend  = "bridge"
+ecs_network_mode_db       = "awsvpc"
+ecs_network_mode_frontend = "awsvpc"
+ecs_network_mode_backend  = "awsvpc"
 # ECS task sizing
 # 256 CPU units = 0.25 vCPU
 # 512 MiB       = 0.5 GB
