@@ -59,8 +59,8 @@ if ! gh workflow run "deploy.yml" \
   -f build_backend=true \
   -f get_backend=false \
   -f run_seeding=true \
-  -f default_network_mode=awsvpc \
-  -f default_launch_type=FARGATE; then
+  -f default_network_mode=non-awsvpc \
+  -f default_launch_type=EC2; then
   echo "Failed to dispatch deploy.yml."
   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
   exit 1
