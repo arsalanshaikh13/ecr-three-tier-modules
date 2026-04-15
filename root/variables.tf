@@ -298,6 +298,37 @@ variable "project_name" {
   type        = string
 }
 
+variable "notification_email_addresses" {
+  description = "Email recipients that should receive SNS-backed release notifications for this environment."
+  type        = list(string)
+  default     = []
+}
+
+variable "alb_5xx_threshold" {
+  description = "Target-group 5xx count threshold used by CloudWatch release-health alarms."
+  type        = number
+}
+
+variable "frontend_latency_threshold_seconds" {
+  description = "Frontend target response time threshold, in seconds, used by CloudWatch release-health alarms."
+  type        = number
+}
+
+variable "backend_latency_threshold_seconds" {
+  description = "Backend target response time threshold, in seconds, used by CloudWatch release-health alarms."
+  type        = number
+}
+
+variable "service_cpu_threshold" {
+  description = "Average ECS service CPU utilization threshold used by CloudWatch release-health alarms."
+  type        = number
+}
+
+variable "service_memory_threshold" {
+  description = "Average ECS service memory utilization threshold used by CloudWatch release-health alarms."
+  type        = number
+}
+
 variable "pub_sub_1a_cidr" {
   description = "CIDR block for public subnet 1 availability zone a cidr."
   type        = string
@@ -331,4 +362,34 @@ variable "probe_image" {
 variable "probe_memory" {
   description = "Memory setting for probe memory."
   type        = number
+}
+
+variable "backend_api_name" {
+  description = "Name for backend api name."
+  type        = string
+}
+
+variable "pri_sub_7a_cidr" {
+  description = "CIDR block for private subnet 7 availability zone a cidr."
+  type        = string
+}
+
+variable "pri_sub_8b_cidr" {
+  description = "CIDR block for private subnet 8 availability zone b cidr."
+  type        = string
+}
+
+variable "pub_sub_3a_cidr" {
+  description = "CIDR block for public subnet 3 availability zone a cidr."
+  type        = string
+}
+
+variable "pub_sub_4b_cidr" {
+  description = "CIDR block for public subnet 4 availability zone b cidr."
+  type        = string
+}
+
+variable "ecs_network_mode_backend" {
+  description = "Input variable for ecs network mode backend."
+  type        = string
 }

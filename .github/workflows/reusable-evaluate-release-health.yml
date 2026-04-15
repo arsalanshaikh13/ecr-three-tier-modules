@@ -1,0 +1,187 @@
+name: Reusable Evaluate Release Health
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name used for vars, approvals, and deployment targeting."
+        required: true
+        type: string
+      component:
+        description: "Application component whose release health is being evaluated."
+        required: true
+        type: string
+      project_name:
+        description: "Project name prefix used in manifest paths and ECS naming."
+        required: true
+        type: string
+      observation_window_minutes:
+        description: "Time window to wait before reading CloudWatch alarms."
+        required: false
+        type: string
+        default: "5"
+      alarm_names:
+        description: "Comma-separated list of CloudWatch alarm names that must remain healthy."
+        required: true
+        type: string
+      health_purpose:
+        description: "Whether this telemetry check belongs to normal deployment validation or rollback verification."
+        required: false
+        type: string
+        default: deployment
+    outputs:
+      telemetry_status:
+        description: "healthy or failed based on the evaluated CloudWatch alarms."
+        value: ${{ jobs.evaluate-release-health.outputs.telemetry_status }}
+      telemetry_reason:
+        description: "Human-readable telemetry decision summary."
+        value: ${{ jobs.evaluate-release-health.outputs.telemetry_reason }}
+      evaluated_alarm_names:
+        description: "Comma-separated list of alarms evaluated by the release-health gate."
+        value: ${{ jobs.evaluate-release-health.outputs.evaluated_alarm_names }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  evaluate-release-health:
+    name: Evaluate Release Health ${{ inputs.component }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      telemetry_status: ${{ steps.telemetry-contract.outputs.telemetry_status }}
+      telemetry_reason: ${{ steps.telemetry-contract.outputs.telemetry_reason }}
+      evaluated_alarm_names: ${{ inputs.alarm_names }}
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Observe release health window
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Smoke tests answer "did the revision start?" while this wait/gate answers
+          # "did the revision stay healthy under observation long enough to trust it?"
+          WINDOW_MINUTES="${{ inputs.observation_window_minutes }}"
+          if [ "$WINDOW_MINUTES" -gt 0 ]; then
+            echo "Waiting ${WINDOW_MINUTES} minute(s) before evaluating CloudWatch alarms..."
+            sleep "$((WINDOW_MINUTES * 60))"
+          fi
+
+      - name: Download deployment metadata artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}
+          path: deploy-metadata
+
+      - name: Read deployment metadata for telemetry manifest
+        id: telemetry-metadata
+        shell: bash
+        run: |
+          METADATA_FILE="deploy-metadata/deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json"
+
+          echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "task_definition_arn=$(jq -r '.newTaskDefinitionArn // .new_task_definition_arn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "previous_task_definition_arn=$(jq -r '.previousTaskDefinitionArn // .previous_task_definition_arn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "image_uri=$(jq -r '.imageUri // .image_uri' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$(jq -r '.imageDigest // .image_digest' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$(jq -r '.imageTag // .image_tag' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "release_version=$(jq -r '.releaseVersion // .release_version' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "scan_status=$(jq -r '.scanStatus // .scan_status' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "sbom_status=$(jq -r '.sbomStatus // .sbom_status' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "sbom_artifact_name=$(jq -r '.sbomArtifactName // .sbom_artifact_name' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(jq -r '.commitSha // .commit_sha' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate CloudWatch alarms
+        id: evaluate-alarms
+        uses: ./.github/actions/cloudwatch-evaluate-alarms
+        with:
+          aws_region: ${{ vars.AWS_REGION }}
+          alarm_names: ${{ inputs.alarm_names }}
+
+      - name: Capture telemetry timestamp
+        id: telemetry-timestamp
+        shell: bash
+        run: |
+          echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Persist telemetry manifest
+        uses: ./.github/actions/deployment-manifest-write
+        with:
+          manifest_dir: manifests/telemetry
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          bucket_prefix: ${{ inputs.health_purpose == 'rollback_verification' && format('{0}/rollback-verifications/{1}/{2}/telemetry', inputs.project_name, inputs.environment, inputs.component) || format('{0}/deployments/{1}/{2}/telemetry', inputs.project_name, inputs.environment, inputs.component) }}
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+          cluster: ${{ steps.telemetry-metadata.outputs.cluster }}
+          service: ${{ steps.telemetry-metadata.outputs.service }}
+          task_definition_arn: ${{ steps.telemetry-metadata.outputs.task_definition_arn }}
+          previous_task_definition_arn: ${{ steps.telemetry-metadata.outputs.previous_task_definition_arn }}
+          image_uri: ${{ steps.telemetry-metadata.outputs.image_uri }}
+          image_digest: ${{ steps.telemetry-metadata.outputs.image_digest }}
+          image_tag: ${{ steps.telemetry-metadata.outputs.image_tag }}
+          release_version: ${{ steps.telemetry-metadata.outputs.release_version }}
+          sbom_status: ${{ steps.telemetry-metadata.outputs.sbom_status }}
+          sbom_artifact_name: ${{ steps.telemetry-metadata.outputs.sbom_artifact_name }}
+          scan_status: ${{ steps.telemetry-metadata.outputs.scan_status }}
+          commit_sha: ${{ steps.telemetry-metadata.outputs.commit_sha }}
+          workflow_run_id: ${{ github.run_id }}
+          workflow_name: ${{ github.workflow }}
+          actor: ${{ github.actor }}
+          timestamp: ${{ steps.telemetry-timestamp.outputs.value }}
+          status: ${{ steps.evaluate-alarms.outputs.evaluation_status == 'healthy' && 'telemetry_healthy' || 'telemetry_failed' }}
+          reason: ${{ steps.evaluate-alarms.outputs.alarm_state_summary }}
+          telemetry_status: ${{ steps.evaluate-alarms.outputs.evaluation_status }}
+          telemetry_reason: ${{ steps.evaluate-alarms.outputs.alarm_state_summary }}
+          evaluated_alarm_names: ${{ inputs.alarm_names }}
+          observation_window_minutes: ${{ inputs.observation_window_minutes }}
+
+      - name: Upload telemetry manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: telemetry-manifests-${{ inputs.component }}-${{ inputs.environment }}-${{ inputs.health_purpose }}
+          path: manifests/telemetry
+          if-no-files-found: error
+
+      - name: Publish telemetry summary
+        shell: bash
+        run: |
+          {
+            echo "## Release Telemetry Evaluation"
+            echo "- Purpose: \`${{ inputs.health_purpose }}\`"
+            echo "- Environment: \`${{ inputs.environment }}\`"
+            echo "- Component: \`${{ inputs.component }}\`"
+            echo "- Observation window: \`${{ inputs.observation_window_minutes }}\` minute(s)"
+            echo "- Alarm names: \`${{ inputs.alarm_names }}\`"
+            echo "- Result: \`${{ steps.evaluate-alarms.outputs.evaluation_status }}\`"
+            echo "- Summary: ${{ steps.evaluate-alarms.outputs.alarm_state_summary }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Capture telemetry workflow output contract
+        id: telemetry-contract
+        shell: bash
+        run: |
+          echo "telemetry_status=${{ steps.evaluate-alarms.outputs.evaluation_status }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "telemetry_reason<<EOF"
+            echo "${{ steps.evaluate-alarms.outputs.alarm_state_summary }}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fail when telemetry gate reports unhealthy release
+        if: ${{ steps.evaluate-alarms.outputs.evaluation_status == 'failed' }}
+        shell: bash
+        run: |
+          echo "Telemetry gate failed: ${{ steps.evaluate-alarms.outputs.alarm_state_summary }}"
+          exit 1

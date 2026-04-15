@@ -24,6 +24,7 @@ resource "aws_security_group" "frontend_alb_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  
 
   egress {
     from_port   = 0
@@ -49,7 +50,6 @@ resource "aws_security_group" "backend_alb_sg" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs_node_frontend_sg.id]
   }
-
 
 
   egress {
@@ -80,6 +80,13 @@ resource "aws_security_group" "ecs_node_frontend_sg" {
     security_groups = [aws_security_group.frontend_alb_sg.id]
   }
 
+ingress {
+    description     = "node port access"
+    from_port   = 32768
+    to_port     = 65535
+    protocol    = "tcp"
+    security_groups = [aws_security_group.frontend_alb_sg.id]
+  }
 
   egress {
     from_port   = 0
@@ -100,6 +107,13 @@ resource "aws_security_group" "ecs_node_backend_sg" {
     description     = "node port access"
     from_port       = var.backend_tg_port
     to_port         = var.backend_tg_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.backend_alb_sg.id]
+  }
+  ingress {
+    description     = "node port access"
+    from_port   = 32768
+    to_port     = 65535
     protocol        = "tcp"
     security_groups = [aws_security_group.backend_alb_sg.id]
   }

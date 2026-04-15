@@ -56,6 +56,36 @@ on:
         options:
           - non-awsvpc
           - awsvpc
+      release_version:
+        description: "Immutable release version for the promoted prod deployment."
+        type: string
+        required: false
+      change_ticket:
+        description: "Change ticket or approval reference for prod promotion."
+        type: string
+        required: false
+      break_glass_reason:
+        description: "Optional emergency override reason for prod promotion."
+        type: string
+        required: false
+      enable_security_scan:
+        description: "Whether the triggered prod deploy should run the image security gate."
+        type: boolean
+        required: true
+        default: false
+      enable_sbom:
+        description: "Whether the triggered prod deploy should generate an SBOM for the resolved image."
+        type: boolean
+        required: true
+        default: false
+      vulnerability_threshold:
+        description: "Severity threshold for the triggered prod deploy security gate."
+        type: choice
+        required: true
+        default: CRITICAL
+        options:
+          - CRITICAL
+          - HIGH,CRITICAL
 
 permissions:
   id-token: write
@@ -63,11 +93,71 @@ permissions:
   actions: write
 
 jobs:
+  predeploy-guardrails:
+    name: Predeploy Guardrails
+    uses: ./.github/workflows/reusable-predeploy-guardrails.yml
+    with:
+      target_environment: prod
+      action_type: deploy
+      release_version: ${{ inputs.release_version }}
+      change_ticket: ${{ inputs.change_ticket }}
+      break_glass_reason: ${{ inputs.break_glass_reason }}
+      freeze_windows_utc: ${{ vars.PROD_FREEZE_WINDOWS_UTC || '' }}
+
+  notify-prod-approval-requested:
+    name: Notify Prod Approval Requested
+    needs: predeploy-guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials for notification publishing
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.PROD_AWS_REGION || 'us-east-2' }}
+
+      - name: Publish prod approval request notification
+        uses: ./.github/actions/send-release-notification
+        with:
+          topic_arn: ${{ vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
+          aws_region: ${{ vars.PROD_AWS_REGION || 'us-east-2' }}
+          notification_event: prod_approval_requested
+          project_name: ${{ vars.PROJECT_NAME }}
+          environment: prod
+          status: pending_approval
+          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+          change_ticket: ${{ inputs.change_ticket }}
+          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          summary: "${{ format('Promotion from {0} is waiting for prod approval. Frontend selected: {1}. Backend selected: {2}.', inputs.source_environment, inputs.promote_frontend, inputs.promote_backend) }}"
+
+  prod-approval:
+    name: Prod Approval Gate
+    needs: [predeploy-guardrails, notify-prod-approval-requested]
+    runs-on: ubuntu-latest
+    # Keep approval on a dedicated environment so human release authorization is separated
+    # from the actual prod execution job. This avoids mixing policy checks, approval, and
+    # artifact promotion into one environment boundary.
+    environment: prod-approval
+    steps:
+      - name: Publish approval context
+        shell: bash
+        run: |
+          {
+            echo "## Prod Approval Context"
+            echo "- Source environment: \`${{ inputs.source_environment }}\`"
+            echo "- Release version: \`${{ needs.predeploy-guardrails.outputs.resolved_release_version }}\`"
+            echo "- Change ticket: \`${{ inputs.change_ticket || 'not-provided' }}\`"
+            echo "- Break glass: \`${{ inputs.break_glass_reason != '' }}\`"
+            echo
+            echo "Approval on \`prod-approval\` authorizes the release."
+            echo "The actual image promotion and prod deployment dispatch happen in the next job."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   promote-and-dispatch:
     name: Promote Approved Images And Trigger Prod Deploy
+    needs: [predeploy-guardrails, prod-approval]
     runs-on: ubuntu-latest
-    # Put prod approval here so no image is copied to the prod region and no prod deploy
-    # is triggered until an operator explicitly approves the promotion workflow.
+    # The execution job still binds to prod so it can use prod-scoped vars and secrets,
+    # but reviewer gating should now live on the separate prod-approval environment.
     environment: prod
 
     steps:
@@ -152,32 +242,33 @@ jobs:
 
             local source_image_uri
             source_image_uri=$(jq -r '.imageUri // .image_uri' "promotion-manifests/${component}-source-manifest.json")
+            local source_image_digest
+            source_image_digest=$(jq -r '.imageDigest // .image_digest' "promotion-manifests/${component}-source-manifest.json")
 
             if [ -z "$source_image_uri" ] || [ "$source_image_uri" = "null" ]; then
               echo "Error: manifest $manifest_key does not contain imageUri."
               exit 1
             fi
 
+            if [ -z "$source_image_digest" ] || [ "$source_image_digest" = "null" ]; then
+              echo "Error: manifest $manifest_key does not contain imageDigest."
+              exit 1
+            fi
+
             # The manifest stores the exact image that passed lower-environment probing.
-            # We promote that same image into the prod-region ECR repo instead of rebuilding.
+            # Promote by digest, not just by tag. The SHA tag is still useful for readability,
+            # but the digest is the immutable identity of the exact artifact that passed lower-env
+            # validation and should therefore be the primary promotion lookup key.
             local source_repository_with_tag="${source_image_uri#*/}"
             local source_repository="${source_repository_with_tag%:*}"
             local source_tag="${source_repository_with_tag##*:}"
             local destination_repository="${PROJECT}-${component}-repo-${{ vars.ENV_VAR }}"
             local destination_image_uri="${DESTINATION_REGISTRY}/${destination_repository}:${source_tag}"
-
-            local image_manifest
-            image_manifest=$(aws ecr batch-get-image \
-              --region "$SOURCE_REGION" \
-              --repository-name "$source_repository" \
-              --image-ids imageTag="$source_tag" \
-              --query 'images[0].imageManifest' \
-              --output text)
-
-            if [ -z "$image_manifest" ] || [ "$image_manifest" = "None" ]; then
-              echo "Error: could not read image manifest for $source_image_uri from $SOURCE_REGION."
-              exit 1
-            fi
+            local source_registry
+            source_registry="$(echo "$source_image_uri" | cut -d'/' -f1)"
+            local source_repository_path
+            source_repository_path="$(echo "$source_image_uri" | cut -d'/' -f2- | cut -d':' -f1)"
+            local source_digest_uri="${source_registry}/${source_repository_path}@${source_image_digest}"
 
             # aws ecr put-image \
             #   --region "$DESTINATION_REGION" \
@@ -197,30 +288,46 @@ jobs:
             # Login to SOURCE region ECR
             aws ecr get-login-password --region "$SOURCE_REGION" \
               | docker login --username AWS --password-stdin \
-                "$(echo "$source_image_uri" | cut -d'/' -f1)"
+                "$source_registry"
 
             # Login to DESTINATION region ECR
             aws ecr get-login-password --region "$DESTINATION_REGION" \
               | docker login --username AWS --password-stdin "$DESTINATION_REGISTRY"
 
-            # Pull from source
-            docker pull "$source_image_uri"
+            # Pull the exact approved artifact by digest instead of trusting whatever the source
+            # tag points to at promotion time. This keeps promotion immutable even if tags move.
+            docker pull "$source_digest_uri"
 
             # Tag for destination
-            docker tag "$source_image_uri" "$destination_image_uri"
+            docker tag "$source_digest_uri" "$destination_image_uri"
 
             # Push to destination
             docker push "$destination_image_uri"
 
+            local promoted_image_digest
+            promoted_image_digest=$(aws ecr describe-images \
+              --region "$DESTINATION_REGION" \
+              --repository-name "$destination_repository" \
+              --image-ids imageTag="$source_tag" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text)
+
+            if [ -z "$promoted_image_digest" ] || [ "$promoted_image_digest" = "None" ]; then
+              echo "Error: could not resolve promoted image digest for $destination_image_uri."
+              exit 1
+            fi
+
             # Cleanup local image to save runner disk space
-            docker rmi "$source_image_uri" "$destination_image_uri" || true
+            docker rmi "$source_digest_uri" "$destination_image_uri" || true
 
           jq -n \
             --arg project            "$PROJECT" \
             --arg sourceEnvironment  "$SOURCE_ENV" \
             --arg sourceManifestKey  "$manifest_key" \
             --arg sourceImageUri     "$source_image_uri" \
+            --arg sourceImageDigest  "$source_image_digest" \
             --arg promotedImageUri   "$destination_image_uri" \
+            --arg promotedImageDigest "$promoted_image_digest" \
             --arg sourceRegion       "$SOURCE_REGION" \
             --arg targetRegion       "$DESTINATION_REGION" \
             --arg promotedBy         "arsalanshaikh13" \
@@ -232,7 +339,9 @@ jobs:
               component: "'"$component"'",
               sourceManifestKey: $sourceManifestKey,
               sourceImageUri: $sourceImageUri,
+              sourceImageDigest: $sourceImageDigest,
               promotedImageUri: $promotedImageUri,
+              promotedImageDigest: $promotedImageDigest,
               sourceRegion: $sourceRegion,
               targetRegion: $targetRegion,
               promotedBy: $promotedBy,
@@ -247,7 +356,9 @@ jobs:
               echo "### ${component} promoted to prod"
               echo "- Source manifest: \`$manifest_key\`"
               echo "- Source image: \`$source_image_uri\`"
+              echo "- Source digest: \`$source_image_digest\`"
               echo "- Promoted image: \`$destination_image_uri\`"
+              echo "- Promoted digest: \`$promoted_image_digest\`"
               echo
             } >> "$SUMMARY_FILE"
           }
@@ -288,13 +399,20 @@ jobs:
             -f get_backend=${{ inputs.promote_backend }} \
             -f run_seeding=${{ inputs.run_seeding_in_prod }} \
             -f default_launch_type=${{ inputs.default_launch_type }} \
-            -f default_network_mode=${{ inputs.default_network_mode }}
+            -f default_network_mode=${{ inputs.default_network_mode }} \
+            -f release_version=${{ needs.predeploy-guardrails.outputs.resolved_release_version }} \
+            -f change_ticket=${{ inputs.change_ticket }} \
+            -f break_glass_reason=${{ inputs.break_glass_reason }} \
+            -f enable_security_scan=${{ inputs.enable_security_scan }} \
+            -f enable_sbom=${{ inputs.enable_sbom }} \
+            -f vulnerability_threshold=${{ inputs.vulnerability_threshold }}
 
           {
             echo "triggered_ref=${{ github.ref_name }}"
             echo "run_seeding=${{ inputs.run_seeding_in_prod }}"
             echo "default_launch_type=${{ inputs.default_launch_type }}"
             echo "default_network_mode=${{ inputs.default_network_mode }}"
+            echo "release_version=${{ needs.predeploy-guardrails.outputs.resolved_release_version }}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish promotion summary to job summary
@@ -311,7 +429,34 @@ jobs:
             echo "- run_seeding: \`${{ steps.trigger-deploy.outputs.run_seeding }}\`"
             echo "- default_launch_type: \`${{ steps.trigger-deploy.outputs.default_launch_type }}\`"
             echo "- default_network_mode: \`${{ steps.trigger-deploy.outputs.default_network_mode }}\`"
+            echo "- release_version: \`${{ steps.trigger-deploy.outputs.release_version }}\`"
             echo
             echo "This promotion workflow copies the approved image into the prod-region ECR repository first."
             echo "The triggered deploy workflow then reuses its existing fetch-from-ECR path, which keeps deployment logic centralized in one place."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-promotion-completed:
+    name: Notify Promotion Completed
+    needs: [predeploy-guardrails, promote-and-dispatch]
+    if: ${{ needs.promote-and-dispatch.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials for notification publishing
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.PROD_AWS_REGION || 'us-east-2' }}
+
+      - name: Publish promotion completed notification
+        uses: ./.github/actions/send-release-notification
+        with:
+          topic_arn: ${{ vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
+          aws_region: ${{ vars.PROD_AWS_REGION || 'us-east-2' }}
+          notification_event: promotion_completed
+          project_name: ${{ vars.PROJECT_NAME }}
+          environment: prod
+          status: success
+          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+          change_ticket: ${{ inputs.change_ticket }}
+          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          summary: "${{ format('Approved images from {0} were promoted into prod ECR and deploy.yml was dispatched for prod rollout.', inputs.source_environment) }}"

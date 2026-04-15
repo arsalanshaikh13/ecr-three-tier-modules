@@ -5,6 +5,15 @@
 region       = "us-east-1"
 environment  = "dev"
 project_name = "lirw-ecs"
+notification_email_addresses = ["maleka.ssk19@gmail.com"]
+
+# CloudWatch release-health alarm tuning. These values mirror the shared-module defaults so
+# dev/prod keep current behavior until you deliberately tune them per environment.
+alb_5xx_threshold                  = 5
+frontend_latency_threshold_seconds = 2
+backend_latency_threshold_seconds  = 2
+service_cpu_threshold              = 80
+service_memory_threshold           = 80
 
 # Networking
 vpc_id          = "vpc-id"
@@ -74,8 +83,8 @@ frontend_memory        = 1024 # 1 GB
 probe_cpu           = 256  # 0.5 vCPU
 probe_memory        = 512 # 1 GB
 
-frontend_desired_count = 2
-backend_desired_count  = 2
+frontend_desired_count = 1 # or 2
+backend_desired_count  = 1 # or 2
 
 frontend_image = "nginx:alpine"
 backend_image  = "node:20-alpine"

@@ -1,0 +1,154 @@
+name: Reusable Predeploy Guardrails
+
+on:
+  workflow_call:
+    inputs:
+      target_environment:
+        description: "Target environment for the requested operation. Supports dev, prod, or all."
+        required: true
+        type: string
+      action_type:
+        description: "High-level action type such as deploy or rollback."
+        required: true
+        type: string
+      release_version:
+        description: "Optional immutable release identifier provided by the operator."
+        required: false
+        type: string
+        default: ""
+      change_ticket:
+        description: "Optional ticket or change request reference."
+        required: false
+        type: string
+        default: ""
+      break_glass_reason:
+        description: "Optional emergency override reason used when policy must be bypassed."
+        required: false
+        type: string
+        default: ""
+      freeze_windows_utc:
+        description: "Optional comma-separated freeze windows in the form 'Sat 00:00-23:59,Sun 00:00-23:59'."
+        required: false
+        type: string
+        default: ""
+      require_change_ticket_for_prod:
+        description: "Whether prod-targeting operations require a change ticket unless break-glass is used."
+        required: false
+        type: boolean
+        default: true
+      require_release_version_for_prod:
+        description: "Whether prod-targeting operations require an explicit release version unless break-glass is used."
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      resolved_release_version:
+        description: "Resolved release version that downstream workflows should persist in metadata and manifests."
+        value: ${{ jobs.guardrails.outputs.resolved_release_version }}
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    name: Predeploy Guardrails (${{ inputs.target_environment }})
+    runs-on: ubuntu-latest
+    outputs:
+      resolved_release_version: ${{ steps.guardrails.outputs.resolved_release_version }}
+    steps:
+      - name: Validate release guardrails and derive release identity
+        id: guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_ENV="${{ inputs.target_environment }}"
+          ACTION_TYPE="${{ inputs.action_type }}"
+          RELEASE_VERSION="${{ inputs.release_version }}"
+          CHANGE_TICKET="${{ inputs.change_ticket }}"
+          BREAK_GLASS_REASON="${{ inputs.break_glass_reason }}"
+          FREEZE_WINDOWS="${{ inputs.freeze_windows_utc }}"
+          REQUIRES_PROD_CONTROLS="false"
+
+          case "$TARGET_ENV" in
+            dev|prod|all) ;;
+            *)
+              echo "Error: unsupported target_environment '$TARGET_ENV'."
+              exit 1
+              ;;
+          esac
+
+          case "$ACTION_TYPE" in
+            deploy|rollback) ;;
+            *)
+              echo "Error: unsupported action_type '$ACTION_TYPE'."
+              exit 1
+              ;;
+          esac
+
+          if [ "$TARGET_ENV" = "prod" ] || [ "$TARGET_ENV" = "all" ]; then
+            REQUIRES_PROD_CONTROLS="true"
+          fi
+
+          if [ -z "$RELEASE_VERSION" ]; then
+            # Derive a deterministic release identifier for non-prod or lightweight runs so
+            # downstream metadata always carries a stable release key even when the operator
+            # does not provide one explicitly.
+            RELEASE_VERSION="run-${{ github.run_number }}-${GITHUB_SHA::7}"
+          fi
+
+          if [ "$REQUIRES_PROD_CONTROLS" = "true" ] && [ -z "$BREAK_GLASS_REASON" ]; then
+            if [ "${{ inputs.require_release_version_for_prod }}" = "true" ] && [ -z "${{ inputs.release_version }}" ]; then
+              echo "Error: prod-targeting operations require an explicit release_version unless break_glass_reason is provided."
+              exit 1
+            fi
+
+            if [ "${{ inputs.require_change_ticket_for_prod }}" = "true" ] && [ -z "$CHANGE_TICKET" ]; then
+              echo "Error: prod-targeting operations require a change_ticket unless break_glass_reason is provided."
+              exit 1
+            fi
+          fi
+
+          if [ -n "$FREEZE_WINDOWS" ] && [ "$REQUIRES_PROD_CONTROLS" = "true" ] && [ -z "$BREAK_GLASS_REASON" ]; then
+            NOW_DAY=$(date -u +%a)
+            NOW_MINUTES=$((10#$(date -u +%H) * 60 + 10#$(date -u +%M)))
+
+            IFS=',' read -ra WINDOWS <<< "$FREEZE_WINDOWS"
+            for WINDOW in "${WINDOWS[@]}"; do
+              WINDOW="$(echo "$WINDOW" | xargs)"
+              [ -z "$WINDOW" ] && continue
+
+              WINDOW_DAY="${WINDOW%% *}"
+              WINDOW_RANGE="${WINDOW#* }"
+              WINDOW_START="${WINDOW_RANGE%-*}"
+              WINDOW_END="${WINDOW_RANGE#*-}"
+
+              if [ "$WINDOW_DAY" != "$NOW_DAY" ]; then
+                continue
+              fi
+
+              START_MINUTES=$((10#${WINDOW_START%%:*} * 60 + 10#${WINDOW_START##*:}))
+              END_MINUTES=$((10#${WINDOW_END%%:*} * 60 + 10#${WINDOW_END##*:}))
+
+              if [ "$NOW_MINUTES" -ge "$START_MINUTES" ] && [ "$NOW_MINUTES" -le "$END_MINUTES" ]; then
+                echo "Error: current UTC time falls within a configured freeze window ($WINDOW)."
+                exit 1
+              fi
+            done
+          fi
+
+          {
+            echo "resolved_release_version=$RELEASE_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish guardrail summary
+        shell: bash
+        run: |
+          {
+            echo "## Predeploy Guardrails"
+            echo "- Target environment: \`${{ inputs.target_environment }}\`"
+            echo "- Action type: \`${{ inputs.action_type }}\`"
+            echo "- Resolved release version: \`${{ steps.guardrails.outputs.resolved_release_version }}\`"
+            echo "- Change ticket provided: \`${{ inputs.change_ticket != '' }}\`"
+            echo "- Break glass used: \`${{ inputs.break_glass_reason != '' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

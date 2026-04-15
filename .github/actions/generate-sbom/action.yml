@@ -1,0 +1,61 @@
+name: Generate SBOM
+description: Generate an SBOM for a resolved container image as a swappable deployment component.
+
+inputs:
+  enabled:
+    description: Whether SBOM generation should run.
+    required: false
+    default: "false"
+  image_uri:
+    description: Fully-qualified image URI to inspect.
+    required: true
+  format:
+    description: SBOM output format supported by Syft.
+    required: false
+    default: spdx-json
+  output_file:
+    description: File path where the SBOM should be written.
+    required: false
+    default: image.sbom.json
+
+outputs:
+  sbom_status:
+    description: not_enabled or generated.
+    value: ${{ steps.generate.outputs.sbom_status }}
+  sbom_file:
+    description: Local SBOM file produced by the action.
+    value: ${{ steps.generate.outputs.sbom_file }}
+
+runs:
+  using: composite
+  steps:
+    - id: generate
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        OUTPUT_FILE="${{ inputs.output_file }}"
+
+        if [ "${{ inputs.enabled }}" != "true" ]; then
+          echo "SBOM generation disabled by caller." > "$OUTPUT_FILE"
+          {
+            echo "sbom_status=not_enabled"
+            echo "sbom_file=$OUTPUT_FILE"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Keep SBOM generation behind its own action so deploy orchestration only decides
+        # whether SBOM is required. The implementation can later be swapped from Syft to
+        # another generator without changing reusable deploy workflow structure.
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$PWD:/work" \
+          anchore/syft:v1.13.0 \
+          "${{ inputs.image_uri }}" \
+          -o "${{ inputs.format }}" > "$OUTPUT_FILE"
+
+        {
+          echo "sbom_status=generated"
+          echo "sbom_file=$OUTPUT_FILE"
+        } >> "$GITHUB_OUTPUT"

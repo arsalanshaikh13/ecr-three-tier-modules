@@ -68,8 +68,8 @@ jobs:
     outputs:
       environment: ${{ inputs.environment }}
       component: ${{ inputs.component }}
-      rollback_target_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
-      rollback_reason: Automatic rollback completed using the last-known-good SSM pointer after probe failure.
+      rollback_target_task_definition_arn: ${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}
+      rollback_reason: ${{ steps.rollback-target.outputs.rollback_target_reason }}
       manifest_artifact_name: rollback-manifests-${{ inputs.component }}-${{ inputs.environment }}
     # Keep rollback attached to the target environment so approvals, environment-scoped vars,
     # and logs all stay grouped under the same deployment surface as the original rollout.
@@ -105,19 +105,21 @@ jobs:
           echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
           echo "attempted_task_definition_arn=$(jq -r '.newTaskDefinitionArn // .new_task_definition_arn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
 
-      - name: Read last-known-good rollback pointer
-        id: rollback-pointer
-        uses: ./.github/actions/deployment-pointer-read
+      - name: Resolve rollback target from trusted pointer and manifest history
+        id: rollback-target
+        uses: ./.github/actions/deployment-history-resolve-rollback
         with:
           project: ${{ inputs.project_name }}
           environment: ${{ inputs.environment }}
           component: ${{ inputs.component }}
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          attempted_task_definition_arn: ${{ steps.rollback-metadata.outputs.attempted_task_definition_arn }}
 
       - name: Validate rollback target exists
         shell: bash
         run: |
-          if [ -z "${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}" ]; then
-            echo "Error: No last-known-good task definition ARN found in SSM for ${{ inputs.component }} (${{ inputs.environment }})."
+          if [ -z "${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}" ]; then
+            echo "Error: No rollback target task definition ARN could be resolved for ${{ inputs.component }} (${{ inputs.environment }})."
             exit 1
           fi
 
@@ -146,15 +148,27 @@ jobs:
           fi
 
           if [ -z "$SECURITY_GROUP_NAME" ]; then
-            SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              SECURITY_GROUP_NAME="${{ vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+            else
+              SECURITY_GROUP_NAME="${{ vars.BACKEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+            fi
           fi
 
           if [ -z "$SUBNET_TAG_VALUES" ]; then
-            SUBNET_TAG_VALUES="${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              SUBNET_TAG_VALUES="${{ vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES || vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+            else
+              SUBNET_TAG_VALUES="${{ vars.BACKEND_SERVICE_SUBNET_TAG_VALUES || vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+            fi
           fi
 
           if [ -z "$ASSIGN_PUBLIC_IP" ]; then
-            ASSIGN_PUBLIC_IP="${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              ASSIGN_PUBLIC_IP="${{ vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP || vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            else
+              ASSIGN_PUBLIC_IP="${{ vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP || vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            fi
           fi
 
           echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
@@ -169,7 +183,7 @@ jobs:
           cluster: ${{ steps.rollback-metadata.outputs.cluster }}
           aws_region: ${{ vars.AWS_REGION }}
           service: ${{ steps.rollback-metadata.outputs.service }}
-          task_definition: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          task_definition: ${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}
           service_launch_type: ${{ steps.rollback-execution.outputs.launch_type }}
           service_network_mode: ${{ steps.rollback-execution.outputs.network_mode }}
           security_group_name: ${{ steps.rollback-execution.outputs.security_group_name }}
@@ -188,8 +202,8 @@ jobs:
           project: ${{ inputs.project_name }}
           environment: ${{ inputs.environment }}
           component: ${{ inputs.component }}
-          current_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
-          last_known_good_task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          current_task_definition_arn: ${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}
+          last_known_good_task_definition_arn: ${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}
 
       - name: Capture rollback timestamp
         id: rollback-timestamp
@@ -208,14 +222,14 @@ jobs:
           component: ${{ inputs.component }}
           cluster: ${{ steps.rollback-metadata.outputs.cluster }}
           service: ${{ steps.rollback-metadata.outputs.service }}
-          task_definition_arn: ${{ steps.rollback-pointer.outputs.last_known_good_task_definition_arn }}
+          task_definition_arn: ${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}
           previous_task_definition_arn: ${{ steps.rollback-metadata.outputs.attempted_task_definition_arn }}
           workflow_run_id: ${{ github.run_id }}
           workflow_name: ${{ github.workflow }}
           actor: ${{ github.actor }}
           timestamp: ${{ steps.rollback-timestamp.outputs.value }}
           status: rolled_back
-          reason: Rollback completed using the last-known-good SSM pointer after probe failure.
+          reason: ${{ steps.rollback-target.outputs.rollback_target_reason }}
 
       - name: Upload rollback manifests
         uses: actions/upload-artifact@v4

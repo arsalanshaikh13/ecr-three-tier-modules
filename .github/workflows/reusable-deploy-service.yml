@@ -15,6 +15,10 @@ on:
         description: "Project name prefix used in ECS/ECR naming."
         required: true
         type: string
+      release_version:
+        description: "Immutable release version resolved by predeploy guardrails."
+        required: true
+        type: string
       build_image:
         description: "Whether this deploy should build and push a fresh image."
         required: true
@@ -41,6 +45,21 @@ on:
         required: false
         type: string
         default: DISABLED
+      enable_security_scan:
+        description: "Whether the pluggable image security gate should run after image resolution."
+        required: false
+        type: boolean
+        default: false
+      enable_sbom:
+        description: "Whether the pluggable SBOM generator should run after image resolution."
+        required: false
+        type: boolean
+        default: false
+      vulnerability_threshold:
+        description: "Severity threshold forwarded into the image security gate."
+        required: false
+        type: string
+        default: CRITICAL
     outputs:
       environment:
         description: "Environment that received the deployment."
@@ -63,6 +82,9 @@ on:
       image_uri:
         description: "Image URI baked into the deployed task definition."
         value: ${{ jobs.deploy-service.outputs.image_uri }}
+      image_digest:
+        description: "Resolved image digest baked into deployment metadata."
+        value: ${{ jobs.deploy-service.outputs.image_digest }}
       metadata_artifact_name:
         description: "Artifact name containing deployment metadata for downstream workflows."
         value: ${{ jobs.deploy-service.outputs.metadata_artifact_name }}
@@ -85,6 +107,7 @@ jobs:
       task_definition_arn: ${{ steps.prepare-task-def.outputs.task_definition_arn }}
       previous_task_definition_arn: ${{ steps.prepare-task-def.outputs.current_task_definition_arn }}
       image_uri: ${{ steps.prepare-task-def.outputs.image }}
+      image_digest: ${{ steps.image-metadata.outputs.image_digest }}
       metadata_artifact_name: deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}
     # Keep the environment on the reusable workflow job so approvals and environment-scoped
     # vars stay attached to the deployment unit instead of the caller needing to duplicate them.
@@ -118,6 +141,51 @@ jobs:
           task_definition_output_path: task-definition-${{ inputs.component }}.json
           container_name: ${{ inputs.project_name }}_${{ inputs.component }}
 
+      - name: Resolve image digest and tag metadata
+        id: image-metadata
+        uses: ./.github/actions/ecr-resolve-image-metadata
+        with:
+          ecr_repository: ${{ inputs.project_name }}-${{ inputs.component }}-repo-${{ vars.ENV_VAR }}
+          image_uri: ${{ steps.prepare-task-def.outputs.image }}
+
+      - name: Generate pluggable SBOM
+        id: sbom
+        uses: ./.github/actions/generate-sbom
+        with:
+          # SBOM generation is intentionally its own component so teams can enable or replace
+          # it without rewriting deploy internals. This keeps supply-chain enrichment modular
+          # instead of hardcoding a specific SBOM tool into the workflow itself.
+          enabled: ${{ inputs.enable_sbom }}
+          image_uri: ${{ steps.prepare-task-def.outputs.image }}
+          output_file: deploy-sbom-${{ inputs.component }}-${{ inputs.environment }}.spdx.json
+
+      - name: Upload SBOM artifact
+        if: ${{ always() && steps.sbom.outputs.sbom_file != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-sbom-${{ inputs.component }}-${{ inputs.environment }}
+          path: ${{ steps.sbom.outputs.sbom_file }}
+          if-no-files-found: error
+
+      - name: Run pluggable image security gate
+        id: security-gate
+        uses: ./.github/actions/image-security-gate
+        with:
+          # Keep scan behavior behind a dedicated action so teams can disable, replace, or
+          # strengthen the scanner later without rewriting deploy orchestration itself.
+          enabled: ${{ inputs.enable_security_scan }}
+          image_uri: ${{ steps.prepare-task-def.outputs.image }}
+          severity_threshold: ${{ inputs.vulnerability_threshold }}
+          report_file: deploy-security-scan-${{ inputs.component }}-${{ inputs.environment }}.txt
+
+      - name: Upload image security report
+        if: ${{ always() && steps.security-gate.outputs.report_file != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-security-scan-${{ inputs.component }}-${{ inputs.environment }}
+          path: ${{ steps.security-gate.outputs.report_file }}
+          if-no-files-found: error
+
       - name: Persist deployment metadata for later jobs
         shell: bash
         run: |
@@ -132,6 +200,12 @@ jobs:
             "previousTaskDefinitionArn": "${{ steps.prepare-task-def.outputs.current_task_definition_arn }}",
             "newTaskDefinitionArn": "${{ steps.prepare-task-def.outputs.task_definition_arn }}",
             "imageUri": "${{ steps.prepare-task-def.outputs.image }}",
+            "imageDigest": "${{ steps.image-metadata.outputs.image_digest }}",
+            "imageTag": "${{ steps.image-metadata.outputs.image_tag }}",
+            "releaseVersion": "${{ inputs.release_version }}",
+            "sbomStatus": "${{ steps.sbom.outputs.sbom_status }}",
+            "sbomArtifactName": "deploy-sbom-${{ inputs.component }}-${{ inputs.environment }}",
+            "scanStatus": "${{ steps.security-gate.outputs.scan_status }}",
             "commitSha": "${{ github.sha }}",
             "workflowRunId": "${{ github.run_id }}"
           }
@@ -148,8 +222,9 @@ jobs:
         id: service-execution
         shell: bash
         run: |
-          # Temporary fallback: when awsvpc service network inputs are omitted, keep deploy
-          # runnable by deriving environment-specific defaults instead of failing immediately.
+          # Keep the reusable workflow generic, but let it understand component-tier fallbacks.
+          # This avoids hardcoding subnet IDs while still allowing frontend and backend to move
+          # onto different private subnet groups without breaking older callers immediately.
           NETWORK_MODE="${{ inputs.service_network_mode }}"
           SECURITY_GROUP_NAME="${{ inputs.security_group_name }}"
           SUBNET_TAG_VALUES="${{ inputs.subnet_tag_values }}"
@@ -161,18 +236,26 @@ jobs:
 
           if [ -z "$SECURITY_GROUP_NAME" ]; then
             if [ "${{ inputs.component }}" = "frontend" ]; then
-              SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}"
+              SECURITY_GROUP_NAME="${{ vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}"
             else
-              SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-backend-sg-{0}', vars.ENV_VAR) }}"
+              SECURITY_GROUP_NAME="${{ vars.BACKEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-backend-sg-{0}', vars.ENV_VAR) }}"
             fi
           fi
 
           if [ -z "$SUBNET_TAG_VALUES" ]; then
-            SUBNET_TAG_VALUES="${{ vars.SERVICE_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              SUBNET_TAG_VALUES="${{ vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES || vars.SERVICE_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}"
+            else
+              SUBNET_TAG_VALUES="${{ vars.BACKEND_SERVICE_SUBNET_TAG_VALUES || vars.SERVICE_SUBNET_TAG_VALUES || 'pri-sub-3a,pri-sub-4b' }}"
+            fi
           fi
 
           if [ -z "$ASSIGN_PUBLIC_IP" ]; then
-            ASSIGN_PUBLIC_IP="${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              ASSIGN_PUBLIC_IP="${{ vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP || vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            else
+              ASSIGN_PUBLIC_IP="${{ vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP || vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            fi
           fi
 
           echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"

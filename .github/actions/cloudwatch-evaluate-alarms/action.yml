@@ -1,0 +1,104 @@
+name: CloudWatch Evaluate Alarms
+description: Resolve CloudWatch alarm state for a release-health gate.
+
+inputs:
+  aws_region:
+    description: AWS region used for the CloudWatch API call.
+    required: true
+  alarm_names:
+    description: Comma-separated list of CloudWatch alarm names to evaluate.
+    required: false
+    default: ""
+  fail_on_missing_alarms:
+    description: Whether missing alarm definitions should fail the evaluation.
+    required: false
+    default: "true"
+
+outputs:
+  evaluation_status:
+    description: healthy, failed, or skipped.
+    value: ${{ steps.evaluate.outputs.evaluation_status }}
+  alarming_names:
+    description: Comma-separated list of alarm names currently in ALARM.
+    value: ${{ steps.evaluate.outputs.alarming_names }}
+  missing_alarm_names:
+    description: Comma-separated list of requested alarm names not returned by CloudWatch.
+    value: ${{ steps.evaluate.outputs.missing_alarm_names }}
+  alarm_state_summary:
+    description: Human-readable summary of alarm evaluation.
+    value: ${{ steps.evaluate.outputs.alarm_state_summary }}
+
+runs:
+  using: composite
+  steps:
+    - id: evaluate
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        RAW_ALARMS="${{ inputs.alarm_names }}"
+        FAIL_ON_MISSING="${{ inputs.fail_on_missing_alarms }}"
+
+        if [ -z "$RAW_ALARMS" ]; then
+          echo "evaluation_status=skipped" >> "$GITHUB_OUTPUT"
+          echo "alarming_names=" >> "$GITHUB_OUTPUT"
+          echo "missing_alarm_names=" >> "$GITHUB_OUTPUT"
+          echo "alarm_state_summary=Telemetry gate skipped because no alarm names were provided." >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        mapfile -t REQUESTED_ALARMS < <(printf '%s' "$RAW_ALARMS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d')
+
+        if [ "${#REQUESTED_ALARMS[@]}" -eq 0 ]; then
+          echo "evaluation_status=skipped" >> "$GITHUB_OUTPUT"
+          echo "alarming_names=" >> "$GITHUB_OUTPUT"
+          echo "missing_alarm_names=" >> "$GITHUB_OUTPUT"
+          echo "alarm_state_summary=Telemetry gate skipped because the resolved alarm list was empty after parsing." >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        ALARM_JSON=$(aws cloudwatch describe-alarms \
+          --region "${{ inputs.aws_region }}" \
+          --alarm-names "${REQUESTED_ALARMS[@]}" \
+          --output json)
+
+        mapfile -t RETURNED_ALARMS < <(printf '%s' "$ALARM_JSON" | jq -r '.MetricAlarms[].AlarmName')
+        mapfile -t ALARMING_ALARMS < <(printf '%s' "$ALARM_JSON" | jq -r '.MetricAlarms[] | select(.StateValue == "ALARM") | .AlarmName')
+
+        MISSING_ALARMS=()
+        for REQUESTED in "${REQUESTED_ALARMS[@]}"; do
+          FOUND=false
+          for RETURNED in "${RETURNED_ALARMS[@]:-}"; do
+            if [ "$REQUESTED" = "$RETURNED" ]; then
+              FOUND=true
+              break
+            fi
+          done
+
+          if [ "$FOUND" = false ]; then
+            MISSING_ALARMS+=("$REQUESTED")
+          fi
+        done
+
+        ALARMING_CSV=$(IFS=,; echo "${ALARMING_ALARMS[*]:-}")
+        MISSING_CSV=$(IFS=,; echo "${MISSING_ALARMS[*]:-}")
+
+        if [ "${#MISSING_ALARMS[@]}" -gt 0 ] && [ "$FAIL_ON_MISSING" = "true" ]; then
+          STATUS="failed"
+          SUMMARY="Telemetry gate failed because one or more required alarms were missing: ${MISSING_CSV}"
+        elif [ "${#ALARMING_ALARMS[@]}" -gt 0 ]; then
+          STATUS="failed"
+          SUMMARY="Telemetry gate failed because these alarms are in ALARM: ${ALARMING_CSV}"
+        else
+          STATUS="healthy"
+          SUMMARY="Telemetry gate passed. All evaluated alarms are present and not in ALARM."
+        fi
+
+        echo "evaluation_status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "alarming_names=$ALARMING_CSV" >> "$GITHUB_OUTPUT"
+        echo "missing_alarm_names=$MISSING_CSV" >> "$GITHUB_OUTPUT"
+        {
+          echo "alarm_state_summary<<EOF"
+          echo "$SUMMARY"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"

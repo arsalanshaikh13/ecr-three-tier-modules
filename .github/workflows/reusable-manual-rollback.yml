@@ -140,11 +140,13 @@ jobs:
       - name: Read last-known-good rollback pointer
         id: manual-rollback-pointer
         if: ${{ steps.resolve-rollback.outputs.task_definition_arn == '' }}
-        uses: ./.github/actions/deployment-pointer-read
+        uses: ./.github/actions/deployment-history-resolve-rollback
         with:
           project: ${{ inputs.project_name }}
           environment: ${{ inputs.environment }}
           component: ${{ inputs.component }}
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          attempted_task_definition_arn: ${{ steps.current-service-state.outputs.current_task_definition_arn }}
 
       - name: Choose final manual rollback target
         id: manual-rollback-target
@@ -154,8 +156,8 @@ jobs:
           TARGET_REASON="${{ steps.resolve-rollback.outputs.reason }}"
 
           if [ -z "$TARGET_ARN" ]; then
-            TARGET_ARN="${{ steps.manual-rollback-pointer.outputs.last_known_good_task_definition_arn }}"
-            TARGET_REASON="Manual rollback defaulted to the trusted SSM last-known-good pointer."
+            TARGET_ARN="${{ steps.manual-rollback-pointer.outputs.rollback_target_task_definition_arn }}"
+            TARGET_REASON="${{ steps.manual-rollback-pointer.outputs.rollback_target_reason }}"
           fi
 
           if [ -z "$TARGET_ARN" ]; then
@@ -191,15 +193,27 @@ jobs:
           fi
 
           if [ -z "$SECURITY_GROUP_NAME" ]; then
-            SECURITY_GROUP_NAME="${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              SECURITY_GROUP_NAME="${{ vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+            else
+              SECURITY_GROUP_NAME="${{ vars.BACKEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
+            fi
           fi
 
           if [ -z "$SUBNET_TAG_VALUES" ]; then
-            SUBNET_TAG_VALUES="${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              SUBNET_TAG_VALUES="${{ vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES || vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+            else
+              SUBNET_TAG_VALUES="${{ vars.BACKEND_SERVICE_SUBNET_TAG_VALUES || vars.SERVICE_SUBNET_TAG_VALUES || '' }}"
+            fi
           fi
 
           if [ -z "$ASSIGN_PUBLIC_IP" ]; then
-            ASSIGN_PUBLIC_IP="${{ vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            if [ "${{ inputs.component }}" = "frontend" ]; then
+              ASSIGN_PUBLIC_IP="${{ vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP || vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            else
+              ASSIGN_PUBLIC_IP="${{ vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP || vars.SERVICE_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
+            fi
           fi
 
           echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"

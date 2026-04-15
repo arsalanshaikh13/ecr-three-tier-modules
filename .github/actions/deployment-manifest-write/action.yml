@@ -55,8 +55,48 @@ inputs:
     description: Image URI deployed for this revision, when relevant.
     required: false
     default: ""
+  image_digest:
+    description: Image digest associated with this deployment, when relevant.
+    required: false
+    default: ""
+  image_tag:
+    description: Image tag associated with this deployment, when relevant.
+    required: false
+    default: ""
+  release_version:
+    description: Immutable release version recorded for this deployment, when relevant.
+    required: false
+    default: ""
+  sbom_status:
+    description: SBOM generation outcome associated with this deployment, when relevant.
+    required: false
+    default: ""
+  sbom_artifact_name:
+    description: Artifact name containing the generated SBOM, when relevant.
+    required: false
+    default: ""
+  scan_status:
+    description: Security scan outcome associated with this deployment, when relevant.
+    required: false
+    default: ""
   commit_sha:
     description: Commit SHA associated with this deployment, when relevant.
+    required: false
+    default: ""
+  telemetry_status:
+    description: Telemetry gate decision associated with this deployment, when relevant.
+    required: false
+    default: ""
+  telemetry_reason:
+    description: Human-readable telemetry evaluation summary, when relevant.
+    required: false
+    default: ""
+  evaluated_alarm_names:
+    description: Comma-separated CloudWatch alarm names evaluated for telemetry gating, when relevant.
+    required: false
+    default: ""
+  observation_window_minutes:
+    description: Observation window used before telemetry evaluation, when relevant.
     required: false
     default: ""
 
@@ -92,7 +132,17 @@ runs:
           --arg taskDefinitionArn "${{ inputs.task_definition_arn }}" \
           --arg previousTaskDefinitionArn "${{ inputs.previous_task_definition_arn }}" \
           --arg imageUri "${{ inputs.image_uri }}" \
+          --arg imageDigest "${{ inputs.image_digest }}" \
+          --arg imageTag "${{ inputs.image_tag }}" \
+          --arg releaseVersion "${{ inputs.release_version }}" \
+          --arg sbomStatus "${{ inputs.sbom_status }}" \
+          --arg sbomArtifactName "${{ inputs.sbom_artifact_name }}" \
+          --arg scanStatus "${{ inputs.scan_status }}" \
           --arg commitSha "${{ inputs.commit_sha }}" \
+          --arg telemetryStatus "${{ inputs.telemetry_status }}" \
+          --arg telemetryReason "${{ inputs.telemetry_reason }}" \
+          --arg evaluatedAlarmNames "${{ inputs.evaluated_alarm_names }}" \
+          --arg observationWindowMinutes "${{ inputs.observation_window_minutes }}" \
           --arg workflowRunId "${{ inputs.workflow_run_id }}" \
           --arg workflowName "${{ inputs.workflow_name }}" \
           --arg deployedBy "${{ inputs.actor }}" \
@@ -108,7 +158,17 @@ runs:
             taskDefinitionArn: $taskDefinitionArn,
             previousTaskDefinitionArn: ($previousTaskDefinitionArn | if . == "" or . == "null" then null else . end),
             imageUri: ($imageUri | if . == "" or . == "null" then null else . end),
+            imageDigest: ($imageDigest | if . == "" or . == "null" then null else . end),
+            imageTag: ($imageTag | if . == "" or . == "null" then null else . end),
+            releaseVersion: ($releaseVersion | if . == "" or . == "null" then null else . end),
+            sbomStatus: ($sbomStatus | if . == "" or . == "null" then null else . end),
+            sbomArtifactName: ($sbomArtifactName | if . == "" or . == "null" then null else . end),
+            scanStatus: ($scanStatus | if . == "" or . == "null" then null else . end),
             commitSha: ($commitSha | if . == "" or . == "null" then null else . end),
+            telemetryStatus: ($telemetryStatus | if . == "" or . == "null" then null else . end),
+            telemetryReason: ($telemetryReason | if . == "" or . == "null" then null else . end),
+            evaluatedAlarmNames: ($evaluatedAlarmNames | if . == "" or . == "null" then null else (. | split(",")) end),
+            observationWindowMinutes: ($observationWindowMinutes | if . == "" or . == "null" then null else (. | tonumber) end),
             workflowRunId: $workflowRunId,
             workflowName: $workflowName,
             deployedBy: $deployedBy,
@@ -118,6 +178,58 @@ runs:
           }' > "$MANIFEST_FILE"
 
         aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY"
+
+        # Keep a lightweight per-component index in S3 so operators and rollback logic can
+        # enumerate recent revisions without scraping individual manifest objects by hand.
+        INDEX_KEY="${{ inputs.project }}/deployments/${{ inputs.environment }}/${{ inputs.component }}/manifest-index.json"
+        INDEX_FILE="$(mktemp)"
+
+        if ! aws s3 cp "s3://${{ inputs.bucket }}/$INDEX_KEY" "$INDEX_FILE" >/dev/null 2>&1; then
+          jq -n \
+            --arg project "${{ inputs.project }}" \
+            --arg environment "${{ inputs.environment }}" \
+            --arg component "${{ inputs.component }}" \
+            '{project: $project, environment: $environment, component: $component, updatedAt: null, entries: []}' > "$INDEX_FILE"
+        fi
+
+        UPDATED_INDEX_FILE="$(mktemp)"
+        jq \
+          --arg manifestS3Key "$MANIFEST_S3_KEY" \
+          --arg status "${{ inputs.status }}" \
+          --arg taskDefinitionArn "${{ inputs.task_definition_arn }}" \
+          --arg previousTaskDefinitionArn "${{ inputs.previous_task_definition_arn }}" \
+          --arg imageUri "${{ inputs.image_uri }}" \
+          --arg imageDigest "${{ inputs.image_digest }}" \
+          --arg imageTag "${{ inputs.image_tag }}" \
+          --arg releaseVersion "${{ inputs.release_version }}" \
+          --arg commitSha "${{ inputs.commit_sha }}" \
+          --arg workflowRunId "${{ inputs.workflow_run_id }}" \
+          --arg workflowName "${{ inputs.workflow_name }}" \
+          --arg deployedAt "${{ inputs.timestamp }}" \
+          --arg reason "${{ inputs.reason }}" \
+          '
+          .updatedAt = $deployedAt
+          | .entries = (
+              [{
+                manifestS3Key: $manifestS3Key,
+                status: $status,
+                taskDefinitionArn: $taskDefinitionArn,
+                previousTaskDefinitionArn: ($previousTaskDefinitionArn | if . == "" or . == "null" then null else . end),
+                imageUri: ($imageUri | if . == "" or . == "null" then null else . end),
+                imageDigest: ($imageDigest | if . == "" or . == "null" then null else . end),
+                imageTag: ($imageTag | if . == "" or . == "null" then null else . end),
+                releaseVersion: ($releaseVersion | if . == "" or . == "null" then null else . end),
+                commitSha: ($commitSha | if . == "" or . == "null" then null else . end),
+                workflowRunId: $workflowRunId,
+                workflowName: $workflowName,
+                deployedAt: $deployedAt,
+                reason: $reason
+              }]
+              + ((.entries // []) | map(select(.manifestS3Key != $manifestS3Key)))
+            )[:50]
+          ' "$INDEX_FILE" > "$UPDATED_INDEX_FILE"
+
+        aws s3 cp "$UPDATED_INDEX_FILE" "s3://${{ inputs.bucket }}/$INDEX_KEY"
 
         echo "manifest_file=$MANIFEST_FILE" >> "$GITHUB_OUTPUT"
         echo "manifest_s3_key=$MANIFEST_S3_KEY" >> "$GITHUB_OUTPUT"

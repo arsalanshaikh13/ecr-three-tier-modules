@@ -1,0 +1,56 @@
+name: ECR Resolve Image Metadata
+description: Resolve image tag and digest for an image URI already chosen by the deployment flow.
+
+inputs:
+  ecr_repository:
+    description: ECR repository that stores the image.
+    required: true
+  image_uri:
+    description: Fully-qualified image URI that should be resolved to richer metadata.
+    required: true
+
+outputs:
+  image:
+    description: Fully-qualified image URI.
+    value: ${{ steps.resolve.outputs.image }}
+  image_tag:
+    description: Image tag when the image URI uses tag addressing.
+    value: ${{ steps.resolve.outputs.image_tag }}
+  image_digest:
+    description: Resolved image digest from ECR.
+    value: ${{ steps.resolve.outputs.image_digest }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        IMAGE_URI="${{ inputs.image_uri }}"
+        IMAGE_TAG=""
+        IMAGE_DIGEST=""
+
+        if [[ "$IMAGE_URI" == *@* ]]; then
+          IMAGE_DIGEST="${IMAGE_URI##*@}"
+        else
+          IMAGE_TAG="${IMAGE_URI##*:}"
+
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "${{ inputs.ecr_repository }}" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          if [ -z "$IMAGE_DIGEST" ] || [ "$IMAGE_DIGEST" = "None" ]; then
+            echo "Error: could not resolve image digest for $IMAGE_URI."
+            exit 1
+          fi
+        fi
+
+        {
+          echo "image=$IMAGE_URI"
+          echo "image_tag=$IMAGE_TAG"
+          echo "image_digest=$IMAGE_DIGEST"
+        } >> "$GITHUB_OUTPUT"

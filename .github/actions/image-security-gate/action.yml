@@ -1,0 +1,64 @@
+name: Image Security Gate
+description: Run an image vulnerability gate as a swappable deployment component instead of hardcoding scan logic into workflows.
+
+inputs:
+  enabled:
+    description: Whether the security gate should run.
+    required: false
+    default: "false"
+  image_uri:
+    description: Fully-qualified image URI to scan.
+    required: true
+  severity_threshold:
+    description: Severity threshold passed into the scanner, for example HIGH,CRITICAL.
+    required: false
+    default: CRITICAL
+  report_file:
+    description: File path where the scan report should be written.
+    required: false
+    default: image-security-scan.txt
+
+outputs:
+  scan_status:
+    description: not_enabled or passed.
+    value: ${{ steps.gate.outputs.scan_status }}
+  report_file:
+    description: Local report file produced by the scan gate.
+    value: ${{ steps.gate.outputs.report_file }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REPORT_FILE="${{ inputs.report_file }}"
+
+        if [ "${{ inputs.enabled }}" != "true" ]; then
+          echo "Security scan disabled by caller." > "$REPORT_FILE"
+          {
+            echo "scan_status=not_enabled"
+            echo "report_file=$REPORT_FILE"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Keep the scanner behind a dedicated action so the deploy workflow can swap out the
+        # implementation later without reworking deploy orchestration. Today we use Trivy in a
+        # container for a practical, self-contained gate that runs on the GitHub runner.
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$PWD:/work" \
+          aquasec/trivy:0.57.1 \
+          image \
+          --no-progress \
+          --severity "${{ inputs.severity_threshold }}" \
+          --exit-code 1 \
+          "${{ inputs.image_uri }}" | tee "$REPORT_FILE"
+
+        {
+          echo "scan_status=passed"
+          echo "report_file=$REPORT_FILE"
+        } >> "$GITHUB_OUTPUT"

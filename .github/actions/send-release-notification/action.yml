@@ -1,0 +1,150 @@
+name: Send Release Notification
+description: Render a release event summary and publish it to an SNS topic for email delivery.
+
+inputs:
+  topic_arn:
+    description: SNS topic ARN to publish to. If empty, the action becomes a no-op.
+    required: false
+    default: ""
+  aws_region:
+    description: AWS region hosting the SNS topic.
+    required: true
+  notification_event:
+    description: High-level event slug such as deploy_started, deploy_succeeded, rollback_triggered, or prod_approval_requested.
+    required: true
+  project_name:
+    description: Project name shown in the notification subject/body.
+    required: true
+  environment:
+    description: Target environment for the event.
+    required: true
+  component:
+    description: Optional component name for component-scoped events.
+    required: false
+    default: ""
+  status:
+    description: Optional machine-friendly status label.
+    required: false
+    default: ""
+  release_version:
+    description: Optional immutable release version.
+    required: false
+    default: ""
+  change_ticket:
+    description: Optional change ticket or approval reference.
+    required: false
+    default: ""
+  image_digest:
+    description: Optional image digest for the release artifact.
+    required: false
+    default: ""
+  task_definition_arn:
+    description: Optional task definition ARN associated with the event.
+    required: false
+    default: ""
+  workflow_url:
+    description: URL of the workflow run that produced this notification.
+    required: true
+  summary:
+    description: Optional human-readable summary or reason.
+    required: false
+    default: ""
+
+outputs:
+  subject:
+    description: Rendered notification subject.
+    value: ${{ steps.render.outputs.subject }}
+  message:
+    description: Rendered notification body.
+    value: ${{ steps.render.outputs.message }}
+  skipped:
+    description: Whether notification delivery was skipped because no topic ARN was configured.
+    value: ${{ steps.publish.outputs.skipped }}
+  message_id:
+    description: SNS message ID when a notification was published.
+    value: ${{ steps.publish.outputs.message_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Render notification payload
+      id: render
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        EVENT="${{ inputs.notification_event }}"
+        PROJECT="${{ inputs.project_name }}"
+        ENVIRONMENT="${{ inputs.environment }}"
+        COMPONENT="${{ inputs.component }}"
+        STATUS="${{ inputs.status }}"
+        RELEASE_VERSION="${{ inputs.release_version }}"
+        CHANGE_TICKET="${{ inputs.change_ticket }}"
+        IMAGE_DIGEST="${{ inputs.image_digest }}"
+        TASK_DEFINITION_ARN="${{ inputs.task_definition_arn }}"
+        WORKFLOW_URL="${{ inputs.workflow_url }}"
+        SUMMARY="${{ inputs.summary }}"
+
+        SUBJECT="[$PROJECT][$ENVIRONMENT] $EVENT"
+        if [ -n "$COMPONENT" ]; then
+          SUBJECT="[$PROJECT][$ENVIRONMENT][$COMPONENT] $EVENT"
+        fi
+
+        {
+          echo "subject=$SUBJECT"
+          echo "message<<EOF"
+          echo "Project: $PROJECT"
+          echo "Environment: $ENVIRONMENT"
+          if [ -n "$COMPONENT" ]; then
+            echo "Component: $COMPONENT"
+          fi
+          echo "Event: $EVENT"
+          if [ -n "$STATUS" ]; then
+            echo "Status: $STATUS"
+          fi
+          if [ -n "$RELEASE_VERSION" ]; then
+            echo "Release Version: $RELEASE_VERSION"
+          fi
+          if [ -n "$CHANGE_TICKET" ]; then
+            echo "Change Ticket: $CHANGE_TICKET"
+          fi
+          if [ -n "$IMAGE_DIGEST" ]; then
+            echo "Image Digest: $IMAGE_DIGEST"
+          fi
+          if [ -n "$TASK_DEFINITION_ARN" ]; then
+            echo "Task Definition ARN: $TASK_DEFINITION_ARN"
+          fi
+          echo "Workflow URL: $WORKFLOW_URL"
+          if [ -n "$SUMMARY" ]; then
+            echo
+            echo "Summary:"
+            echo "$SUMMARY"
+          fi
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Publish SNS notification
+      id: publish
+      shell: bash
+      env:
+        RENDERED_SUBJECT: ${{ steps.render.outputs.subject }}
+        RENDERED_MESSAGE: ${{ steps.render.outputs.message }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${{ inputs.topic_arn }}" ]; then
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "message_id=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        MESSAGE_ID="$(aws sns publish \
+          --region "${{ inputs.aws_region }}" \
+          --topic-arn "${{ inputs.topic_arn }}" \
+          --subject "$RENDERED_SUBJECT" \
+          --message "$RENDERED_MESSAGE" \
+          --query 'MessageId' \
+          --output text)"
+
+        echo "skipped=false" >> "$GITHUB_OUTPUT"
+        echo "message_id=$MESSAGE_ID" >> "$GITHUB_OUTPUT"

@@ -69,6 +69,46 @@ on:
         options:
           - non-awsvpc
           - awsvpc
+      release_version:
+        description: "Optional immutable release version. Required for prod-targeting guarded runs unless break-glass is used."
+        type: string
+        required: false
+      change_ticket:
+        description: "Optional change ticket or approval reference. Required for prod-targeting guarded runs unless break-glass is used."
+        type: string
+        required: false
+      break_glass_reason:
+        description: "Optional emergency override reason for guarded prod operations."
+        type: string
+        required: false
+      enable_security_scan:
+        description: "Run the pluggable image security gate during deploy preparation?"
+        type: boolean
+        required: true
+        default: false
+      enable_sbom:
+        description: "Generate an SBOM for the resolved deploy image?"
+        type: boolean
+        required: true
+        default: false
+      enable_telemetry_gate:
+        description: "Evaluate CloudWatch release-health alarms after probe succeeds?"
+        type: boolean
+        required: true
+        default: false
+      observation_window_minutes:
+        description: "Minutes to observe release health before reading CloudWatch alarms."
+        type: string
+        required: true
+        default: "5"
+      vulnerability_threshold:
+        description: "Severity threshold passed into the image security gate when enabled."
+        type: choice
+        required: true
+        default: CRITICAL
+        options:
+          - CRITICAL
+          - HIGH,CRITICAL
       rollback_component:
         description: "Component to roll back when action_type is rollback"
         type: choice
@@ -91,11 +131,26 @@ permissions:
   contents: read
 
 jobs:
+  predeploy-guardrails:
+    name: Predeploy Guardrails
+    # Keep governance in a reusable workflow so release policy can evolve independently from
+    # deploy mechanics. This lets us bolt on stronger prod controls without hardwiring them
+    # across every job in deploy.yml.
+    uses: ./.github/workflows/reusable-predeploy-guardrails.yml
+    with:
+      target_environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'dev' }}
+      action_type: ${{ github.event_name == 'workflow_dispatch' && inputs.action_type || 'deploy' }}
+      release_version: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
+      change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
+      break_glass_reason: ${{ github.event_name == 'workflow_dispatch' && inputs.break_glass_reason || '' }}
+      freeze_windows_utc: ${{ vars.PROD_FREEZE_WINDOWS_UTC || '' }}
+
   # ---------------------------------------------------------
   # 1. DETECT CHANGES (Path Filtering)
   # ---------------------------------------------------------
   detect-changes:
     name: Detect Changed Paths & Setup Matrix
+    needs: predeploy-guardrails
     runs-on: ubuntu-latest
     outputs:
       # Output includes component+environment object matrix for build-and-deploy job.
@@ -242,7 +297,7 @@ jobs:
   # ---------------------------------------------------------
   build-and-deploy:
     name: Build & Deploy ${{ matrix.component }} (${{ matrix.environment }})
-    needs: detect-changes
+    needs: [predeploy-guardrails, detect-changes]
     # CRITICAL: If the array is empty, skip this job entirely to prevent matrix errors
     if: ${{ needs.detect-changes.outputs.matrix != '[]' }}
     strategy:
@@ -257,12 +312,18 @@ jobs:
       environment: ${{ matrix.environment }}
       component: ${{ matrix.component }}
       project_name: ${{ vars.PROJECT_NAME }}
+      release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+      enable_security_scan: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_security_scan || false }}
+      enable_sbom: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_sbom || false }}
+      vulnerability_threshold: ${{ github.event_name == 'workflow_dispatch' && inputs.vulnerability_threshold || 'CRITICAL' }}
       # Workflow-level defaults are explicit test controls now: callers can still override
       # specific jobs later, but the dispatch contract always speaks in concrete ECS terms.
       service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SERVICE_NETWORK_MODE }}
-      subnet_tag_values: ${{ vars.SERVICE_SUBNET_TAG_VALUES || '' }}
-      security_group_name: ${{ vars.SERVICE_SECURITY_GROUP_NAME || '' }}
-      assign_public_ip: ${{ vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
+      # Service networking is component-aware now so frontend and backend can evolve toward
+      # separate private subnet groups without teaching the lower-level actions about tiers.
+      subnet_tag_values: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SUBNET_TAG_VALUES) || vars.SERVICE_SUBNET_TAG_VALUES || '' }}
+      security_group_name: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SECURITY_GROUP_NAME) || vars.SERVICE_SECURITY_GROUP_NAME || '' }}
+      assign_public_ip: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP) || vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
       # Caller-owned image policy keeps the reusable deploy workflow honest: it executes the
       # requested strategy, while deploy.yml remains the single place where rollout intent lives.
       # Push events always build fresh images. Manual runs can choose per component whether
@@ -271,12 +332,43 @@ jobs:
       fetch_image: ${{ github.event_name == 'workflow_dispatch' && ((matrix.component == 'frontend' && inputs.get_frontend) || (matrix.component == 'backend' && inputs.get_backend)) }}
     secrets: inherit
 
+  notify-deploy-started:
+    name: Notify Deploy Started ${{ matrix.component }} (${{ matrix.environment }})
+    needs: [predeploy-guardrails, detect-changes]
+    if: ${{ needs.detect-changes.outputs.matrix != '[]' && (github.event_name == 'workflow_dispatch' || matrix.environment == 'prod') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials for notification publishing
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+
+      - name: Publish deploy-started notification
+        uses: ./.github/actions/send-release-notification
+        with:
+          topic_arn: ${{ matrix.environment == 'prod' && vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || vars.DEV_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
+          aws_region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+          notification_event: deploy_started
+          project_name: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          component: ${{ matrix.component }}
+          status: in_progress
+          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+          change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
+          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          summary: ${{ github.event_name == 'workflow_dispatch' && 'Manual deploy request entered the reusable deploy/probe/telemetry workflow graph.' || 'Push-triggered deploy entered the reusable deploy/probe/telemetry workflow graph.' }}
+
   # ---------------------------------------------------------
   # 3. POST-DEPLOY PROBE (Runs once per environment)
   # ---------------------------------------------------------
   probe-app:
     name: Probe App (${{ matrix.environment }})
-    needs: [detect-changes, build-and-deploy]
+    needs: [predeploy-guardrails, detect-changes, build-and-deploy]
     if: ${{ needs.detect-changes.outputs.env_matrix != '[]' || needs.detect-changes.outputs.matrix != '[]' }}
     strategy:
       fail-fast: false
@@ -301,12 +393,34 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------
+  # 4. POST-PROBE TELEMETRY GATE
+  # ---------------------------------------------------------
+  evaluate-release-health:
+    name: Evaluate Release Health ${{ matrix.component }} (${{ matrix.environment }})
+    needs: [predeploy-guardrails, detect-changes, build-and-deploy, probe-app]
+    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && needs.probe-app.result == 'success' && (matrix.environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true)) && ((matrix.component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '') || (matrix.component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != '')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    # Telemetry validation is intentionally a separate reusable workflow so smoke tests,
+    # CloudWatch-based release checks, and rollback orchestration can evolve independently.
+    uses: ./.github/workflows/reusable-evaluate-release-health.yml
+    with:
+      environment: ${{ matrix.environment }}
+      component: ${{ matrix.component }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      observation_window_minutes: ${{ (github.event_name == 'workflow_dispatch' && inputs.observation_window_minutes) || '5' }}
+      alarm_names: ${{ (matrix.component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES) || (matrix.component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES) || '' }}
+    secrets: inherit
+
+  # ---------------------------------------------------------
   # 5. ROLLBACK (Use SSM last-known-good pointer when probe/finalize fails)
   # ---------------------------------------------------------
   rollback:
     name: Roll Back ${{ matrix.component }} (${{ matrix.environment }})
-    needs: [detect-changes, build-and-deploy, probe-app]
-    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && needs.probe-app.result == 'failure'  }}
+    needs: [predeploy-guardrails, detect-changes, build-and-deploy, probe-app, evaluate-release-health]
+    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && (needs.probe-app.result == 'failure' || needs.evaluate-release-health.result == 'failure') }}
     strategy:
       fail-fast: false
       matrix:
@@ -320,6 +434,10 @@ jobs:
       project_name: ${{ vars.PROJECT_NAME }}
       service_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
       service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
+      # Rollback should target the same tier-specific network boundary the forward deploy used.
+      security_group_name: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SECURITY_GROUP_NAME) || vars.SERVICE_SECURITY_GROUP_NAME || '' }}
+      subnet_tag_values: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SUBNET_TAG_VALUES) || vars.SERVICE_SUBNET_TAG_VALUES || '' }}
+      assign_public_ip: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP) || vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
     secrets: inherit
 
   # ---------------------------------------------------------
@@ -327,7 +445,7 @@ jobs:
   # ---------------------------------------------------------
   verify-rollback-recovery:
     name: Verify Rollback Recovery (${{ matrix.environment }})
-    needs: [detect-changes, rollback]
+    needs: [predeploy-guardrails, detect-changes, rollback]
     if: ${{ always() && needs.rollback.result == 'success' && needs.detect-changes.outputs.env_matrix != '[]' }}
     strategy:
       fail-fast: false
@@ -352,10 +470,32 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------
+  # 5c. TELEMETRY GATE AFTER AUTO ROLLBACK VERIFICATION
+  # ---------------------------------------------------------
+  evaluate-rollback-health:
+    name: Evaluate Rollback Health ${{ matrix.component }} (${{ matrix.environment }})
+    needs: [predeploy-guardrails, detect-changes, rollback, verify-rollback-recovery]
+    if: ${{ always() && needs.rollback.result == 'success' && needs.verify-rollback-recovery.result == 'success' && (matrix.environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true)) && ((matrix.component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '') || (matrix.component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != '')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    uses: ./.github/workflows/reusable-evaluate-release-health.yml
+    with:
+      environment: ${{ matrix.environment }}
+      component: ${{ matrix.component }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      observation_window_minutes: ${{ (github.event_name == 'workflow_dispatch' && inputs.observation_window_minutes) || '5' }}
+      alarm_names: ${{ (matrix.component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES) || (matrix.component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES) || '' }}
+      health_purpose: rollback_verification
+    secrets: inherit
+
+  # ---------------------------------------------------------
   # 6. MANUAL ROLLBACK (Workflow dispatch only)
   # ---------------------------------------------------------
   manual-rollback:
     name: Manual Roll Back ${{ inputs.rollback_component }} (${{ inputs.target_environment }})
+    needs: predeploy-guardrails
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
     # Manual rollback remains a separate reusable workflow from auto rollback because its
     # contract is operator-driven: explicit ARN, manifest history, or trusted SSM fallback.
@@ -366,6 +506,9 @@ jobs:
       project_name: ${{ vars.PROJECT_NAME }}
       service_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
       service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
+      security_group_name: ${{ (inputs.rollback_component == 'frontend' && vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME) || (inputs.rollback_component == 'backend' && vars.BACKEND_SERVICE_SECURITY_GROUP_NAME) || vars.SERVICE_SECURITY_GROUP_NAME || '' }}
+      subnet_tag_values: ${{ (inputs.rollback_component == 'frontend' && vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES) || (inputs.rollback_component == 'backend' && vars.BACKEND_SERVICE_SUBNET_TAG_VALUES) || vars.SERVICE_SUBNET_TAG_VALUES || '' }}
+      assign_public_ip: ${{ (inputs.rollback_component == 'frontend' && vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP) || (inputs.rollback_component == 'backend' && vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP) || vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
       rollback_task_definition_arn: ${{ inputs.rollback_task_definition_arn }}
       rollback_manifest_s3_key: ${{ inputs.rollback_manifest_s3_key }}
     secrets: inherit
@@ -375,7 +518,7 @@ jobs:
   # ---------------------------------------------------------
   verify-manual-rollback-recovery:
     name: Verify Manual Rollback Recovery (${{ inputs.target_environment }})
-    needs: [manual-rollback]
+    needs: [predeploy-guardrails, manual-rollback]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' && needs.manual-rollback.result == 'success' }}
     # Manual rollback deserves the same health verification as automatic rollback.
     # We keep it separate from the rollback workflow itself so the graph clearly shows
@@ -395,11 +538,28 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------
+  # 6c. TELEMETRY GATE AFTER MANUAL ROLLBACK VERIFICATION
+  # ---------------------------------------------------------
+  evaluate-manual-rollback-health:
+    name: Evaluate Manual Rollback Health (${{ inputs.target_environment }})
+    needs: [predeploy-guardrails, manual-rollback, verify-manual-rollback-recovery]
+    if: ${{ always() && needs.manual-rollback.result == 'success' && needs.verify-manual-rollback-recovery.result == 'success' && (inputs.target_environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true)) && ((inputs.rollback_component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '') || (inputs.rollback_component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != '')) }}
+    uses: ./.github/workflows/reusable-evaluate-release-health.yml
+    with:
+      environment: ${{ inputs.target_environment }}
+      component: ${{ inputs.rollback_component }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      observation_window_minutes: ${{ inputs.observation_window_minutes }}
+      alarm_names: ${{ (inputs.rollback_component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES) || (inputs.rollback_component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES) || '' }}
+      health_purpose: rollback_verification
+    secrets: inherit
+
+  # ---------------------------------------------------------
   # 7. DB SEEDING (Manual Only)
   # ---------------------------------------------------------
   seed-database:
     name: Build & Run DB Seeder
-    needs: detect-changes
+    needs: [predeploy-guardrails, detect-changes]
     # ONLY runs on workflow dispatch AND if run_seeding is explicitly checked
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeding == true }}
     strategy:
@@ -419,7 +579,138 @@ jobs:
       fetch_image: false
       seeder_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || vars.SEEDER_LAUNCH_TYPE  }}
       seeder_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SEEDER_NETWORK_MODE }}
-      seeder_security_group_name: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}
-      seeder_subnet_tag_values: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
+      # Seeder keeps its own networking contract because database mutation is a separate
+      # execution concern from frontend/backend service rollout.
+      seeder_security_group_name: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
+      seeder_subnet_tag_values: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}
       seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || '' }}
     secrets: inherit
+
+  notify-deploy-outcome:
+    name: Notify Deploy Outcome ${{ matrix.component }} (${{ matrix.environment }})
+    needs: [predeploy-guardrails, detect-changes, build-and-deploy, probe-app, evaluate-release-health, rollback, verify-rollback-recovery, evaluate-rollback-health]
+    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve terminal deploy event
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_RESULT="${{ needs.build-and-deploy.result }}"
+          PROBE_RESULT="${{ needs.probe-app.result }}"
+          TELEMETRY_RESULT="${{ needs.evaluate-release-health.result }}"
+          ROLLBACK_RESULT="${{ needs.rollback.result }}"
+          VERIFY_ROLLBACK_RESULT="${{ needs.verify-rollback-recovery.result }}"
+          ROLLBACK_TELEMETRY_RESULT="${{ needs.evaluate-rollback-health.result }}"
+
+          EVENT="deploy_failed"
+          STATUS="failure"
+          SUMMARY="Deployment did not reach a healthy terminal state."
+
+          if [[ "$BUILD_RESULT" == "success" && "$PROBE_RESULT" == "success" && ( "$TELEMETRY_RESULT" == "success" || "$TELEMETRY_RESULT" == "skipped" ) ]]; then
+            EVENT="deploy_succeeded"
+            STATUS="success"
+            SUMMARY="Deployment completed successfully and any enabled telemetry gate passed."
+          elif [[ "$ROLLBACK_RESULT" == "success" && "$VERIFY_ROLLBACK_RESULT" == "success" && ( "$ROLLBACK_TELEMETRY_RESULT" == "success" || "$ROLLBACK_TELEMETRY_RESULT" == "skipped" ) ]]; then
+            EVENT="rollback_recovered"
+            STATUS="recovered"
+            SUMMARY="Deployment failure triggered rollback, and rollback verification completed successfully."
+          elif [[ "$ROLLBACK_RESULT" == "success" && ( "$VERIFY_ROLLBACK_RESULT" == "failure" || "$ROLLBACK_TELEMETRY_RESULT" == "failure" ) ]]; then
+            EVENT="rollback_verification_failed"
+            STATUS="failure"
+            SUMMARY="Rollback executed, but post-rollback verification or rollback telemetry still reported the environment unhealthy."
+          elif [[ "$ROLLBACK_RESULT" == "failure" ]]; then
+            EVENT="rollback_failed"
+            STATUS="failure"
+            SUMMARY="Rollback was triggered but did not complete successfully."
+          elif [[ "$PROBE_RESULT" == "failure" || "$TELEMETRY_RESULT" == "failure" ]]; then
+            EVENT="rollback_triggered"
+            STATUS="degraded"
+            SUMMARY="Deployment validation failed and rollback handling was triggered."
+          fi
+
+          echo "event=$EVENT" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials for notification publishing
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+
+      - name: Publish terminal deploy notification
+        uses: ./.github/actions/send-release-notification
+        with:
+          topic_arn: ${{ matrix.environment == 'prod' && vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || vars.DEV_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
+          aws_region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+          notification_event: ${{ steps.status.outputs.event }}
+          project_name: ${{ vars.PROJECT_NAME }}
+          environment: ${{ matrix.environment }}
+          component: ${{ matrix.component }}
+          status: ${{ steps.status.outputs.status }}
+          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+          change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
+          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          summary: ${{ steps.status.outputs.summary }}
+
+  notify-manual-rollback-outcome:
+    name: Notify Manual Rollback Outcome (${{ inputs.target_environment }})
+    needs: [predeploy-guardrails, manual-rollback, verify-manual-rollback-recovery, evaluate-manual-rollback-health]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve terminal manual rollback event
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROLLBACK_RESULT="${{ needs.manual-rollback.result }}"
+          VERIFY_RESULT="${{ needs.verify-manual-rollback-recovery.result }}"
+          TELEMETRY_RESULT="${{ needs.evaluate-manual-rollback-health.result }}"
+
+          EVENT="manual_rollback_failed"
+          STATUS="failure"
+          SUMMARY="Manual rollback did not complete successfully."
+
+          if [[ "$ROLLBACK_RESULT" == "success" && "$VERIFY_RESULT" == "success" && ( "$TELEMETRY_RESULT" == "success" || "$TELEMETRY_RESULT" == "skipped" ) ]]; then
+            EVENT="manual_rollback_succeeded"
+            STATUS="success"
+            SUMMARY="Manual rollback completed successfully and post-rollback validation reported the environment healthy."
+          elif [[ "$ROLLBACK_RESULT" == "success" && ( "$VERIFY_RESULT" == "failure" || "$TELEMETRY_RESULT" == "failure" ) ]]; then
+            EVENT="manual_rollback_verification_failed"
+            STATUS="failure"
+            SUMMARY="Manual rollback executed, but rollback verification or rollback telemetry still reported the environment unhealthy."
+          fi
+
+          echo "event=$EVENT" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials for notification publishing
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ inputs.target_environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+
+      - name: Publish manual rollback notification
+        uses: ./.github/actions/send-release-notification
+        with:
+          topic_arn: ${{ inputs.target_environment == 'prod' && vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || vars.DEV_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
+          aws_region: ${{ inputs.target_environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+          notification_event: ${{ steps.status.outputs.event }}
+          project_name: ${{ vars.PROJECT_NAME }}
+          environment: ${{ inputs.target_environment }}
+          component: ${{ inputs.rollback_component }}
+          status: ${{ steps.status.outputs.status }}
+          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+          change_ticket: ${{ inputs.change_ticket || '' }}
+          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          summary: ${{ steps.status.outputs.summary }}

@@ -5,6 +5,15 @@
 region       = "us-east-2"
 environment  = "prod"
 project_name = "lirw-ecs"
+notification_email_addresses = ["maleka.ssk19@gmail.com"]
+
+# CloudWatch release-health alarm tuning. These values mirror the shared-module defaults so
+# prod keeps the current alarm posture until you intentionally harden or relax thresholds.
+alb_5xx_threshold                  = 5
+frontend_latency_threshold_seconds = 2
+backend_latency_threshold_seconds  = 2
+service_cpu_threshold              = 80
+service_memory_threshold           = 80
 
 # Networking
 vpc_cidr        = "15.0.0.0/16"
@@ -23,13 +32,13 @@ frontend_instance_type = "c7i-flex.large"
 backend_instance_type  = "c7i-flex.large"
 
 # asg capacity
-back_asg_min_size         = 2
-back_asg_max_size         = 3
-back_asg_desired_capacity = 2
+back_asg_min_size         = 1 # or 2
+back_asg_max_size         = 2 # or 3
+back_asg_desired_capacity = 1 # or 2
 
-front_asg_min_size         = 2
-front_asg_max_size         = 3
-front_asg_desired_capacity = 2
+front_asg_min_size         = 1 # or 2
+front_asg_max_size         = 2
+front_asg_desired_capacity = 1 # or 2
 
 
 # auto scale ecs based on CPU utitlization
@@ -74,8 +83,8 @@ probe_cpu           = 256  # 0.5 vCPU
 probe_memory        = 512 # 1 GB
 
 
-frontend_desired_count = 3
-backend_desired_count  = 3
+frontend_desired_count = 1 # or 3
+backend_desired_count  = 1 # or 3
 
 frontend_image = "nginx:alpine"
 backend_image  = "node:20-alpine"
