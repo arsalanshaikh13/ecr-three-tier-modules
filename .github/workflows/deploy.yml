@@ -1,10 +1,10 @@
-﻿name: Build, Push, and Deploy to ECS
+name: Build, Push, and Deploy to ECS
 
 on:
   push:
     branches:
-      - multi-env
-      - multi-env-actions
+      - multi-env-action
+      - three-tier-multi-env
     paths:
       - "lirw-three-tier/frontend/**"
       - "lirw-three-tier/backend/**"
@@ -132,6 +132,12 @@ permissions:
   id-token: write
   contents: read
 
+# Prevent parallel deploys to the same environment from racing on ECS service
+# updates, SSM pointer writes, and overlapping probe evaluations.
+concurrency:
+  group: deploy-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'dev' }}
+  cancel-in-progress: false
+
 jobs:
   predeploy-guardrails:
     name: Predeploy Guardrails
@@ -154,6 +160,7 @@ jobs:
     name: Detect Changed Paths & Setup Matrix
     needs: predeploy-guardrails
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Push events always target dev only -- production deploys must be triggered manually.
     # This policy ensures push-based automation cannot reach prod without an explicit operator
     # decision, even if the commit touches prod-relevant code paths.
@@ -253,124 +260,17 @@ jobs:
 
       - name: Calculate Dynamic Matrix
         id: set-matrix
-        shell: bash
-        run: |
-          set -euo pipefail
+        uses: ./.github/actions/compute-deploy-matrix
+        with:
+          event_name: ${{ github.event_name }}
+          frontend_changed: ${{ steps.filter.outputs.frontend || steps.filter-fallback.outputs.frontend || 'false' }}
+          backend_changed: ${{ steps.filter.outputs.backend || steps.filter-fallback.outputs.backend || 'false' }}
+          action_type: ${{ github.event_name == 'workflow_dispatch' && inputs.action_type || 'deploy' }}
+          target_environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'dev' }}
+          frontend_image_strategy: ${{ github.event_name == 'workflow_dispatch' && inputs.frontend_image_strategy || 'build' }}
+          backend_image_strategy: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_image_strategy || 'build' }}
+          enable_telemetry_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate || 'false' }}
 
-          # ----- matrix input setup -----------------------------------------
-          COMPONENTS=()
-          TARGET_ENVS=()
-
-          # ----- push event component/environment policy --------------------
-          # 1. PUSH EVENT: build only what changed; always target dev only.
-          if [ "${{ github.event_name }}" == "push" ]; then
-            FRONTEND_CHANGED="${{ steps.filter.outputs.frontend || steps.filter-fallback.outputs.frontend }}"
-            BACKEND_CHANGED="${{ steps.filter.outputs.backend || steps.filter-fallback.outputs.backend }}"
-
-            if [ "$FRONTEND_CHANGED" == "true" ]; then COMPONENTS+=("frontend"); fi
-            if [ "$BACKEND_CHANGED" == "true" ]; then  COMPONENTS+=("backend");  fi
-            TARGET_ENVS=("dev")
-
-          # ----- manual dispatch component/environment policy ---------------
-          # 2. MANUAL TRIGGER: resolve components from the image-strategy choice inputs.
-          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-
-            # Manual rollback uses its own job path. Emit empty matrices and stop so that
-            # the deploy/probe/telemetry graph is fully skipped.
-            if [ "${{ inputs.action_type }}" == "rollback" ]; then
-              echo "matrix=[]"                >> "$GITHUB_OUTPUT"
-              echo "prod_matrix=[]"           >> "$GITHUB_OUTPUT"
-              echo "env_matrix=[]"            >> "$GITHUB_OUTPUT"
-              echo "run_telemetry_gate=false" >> "$GITHUB_OUTPUT"
-              echo "telemetry_matrix=[]"      >> "$GITHUB_OUTPUT"
-              echo "notify_matrix=[]"         >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            # "skip" means the operator explicitly excluded this component from the run.
-            if [ "${{ inputs.frontend_image_strategy }}" != "skip" ]; then COMPONENTS+=("frontend"); fi
-            if [ "${{ inputs.backend_image_strategy }}"  != "skip" ]; then COMPONENTS+=("backend");  fi
-
-            if [ "${{ inputs.target_environment }}" == "all" ]; then
-              TARGET_ENVS=("dev" "prod")
-            else
-              TARGET_ENVS=("${{ inputs.target_environment }}")
-            fi
-          fi
-
-          # ----- core matrix rendering --------------------------------------
-          # Build componentxenvironment object matrix: [{component, environment}, ...]
-          if [ ${#COMPONENTS[@]} -eq 0 ] || [ ${#TARGET_ENVS[@]} -eq 0 ]; then
-            MATRIX_JSON="[]"
-          else
-            MATRIX_JSON=$(jq -cn \
-              --argjson comps "$(printf '%s\n' "${COMPONENTS[@]}" | jq -R . | jq -s .)" \
-              --argjson envs  "$(printf '%s\n' "${TARGET_ENVS[@]}"  | jq -R . | jq -s .)" \
-              '[ $comps[] as $c | $envs[] as $e | {component: $c, environment: $e} ]')
-          fi
-
-          # ----- environment-only matrix ------------------------------------
-          # Environment-only matrix for jobs that run once per environment (probe, seed).
-          if [ ${#TARGET_ENVS[@]} -eq 0 ]; then
-            ENV_MATRIX_JSON="[]"
-          else
-            ENV_MATRIX_JSON=$(printf '%s\n' "${TARGET_ENVS[@]}" | jq -R . | jq -s -c .)
-          fi
-
-          # ----- prod-only subset -------------------------------------------
-          # Prod-only subset -- lets downstream jobs apply "prod always, dev only on explicit
-          # request" logic without putting conditional expressions inside matrix.include keys.
-          if [ "$MATRIX_JSON" = "[]" ]; then
-            PROD_MATRIX_JSON="[]"
-          else
-            PROD_MATRIX_JSON=$(printf '%s' "$MATRIX_JSON" \
-              | jq -c '[ .[] | select(.environment == "prod") ]')
-          fi
-
-          # ----- telemetry policy outputs -----------------------------------
-          # Pre-compute the telemetry gate flag so downstream if: blocks stay simple.
-          # Telemetry fires when:
-          #   a) operator enabled the toggle on a manual run with at least one component, OR
-          #   b) prod is in scope (prod always gets the telemetry gate, toggle is irrelevant).
-          DISPATCH_TELEMETRY="${{ github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true }}"
-          if [[ ("$DISPATCH_TELEMETRY" == "true" && "$MATRIX_JSON" != "[]") || "$PROD_MATRIX_JSON" != "[]" ]]; then
-            RUN_TELEMETRY="true"
-            # When telemetry is enabled for a manual run use the full matrix; push events
-            # (dev-only) never hit prod so prod_matrix already captures the right scope.
-            if [[ "$DISPATCH_TELEMETRY" == "true" && "$MATRIX_JSON" != "[]" ]]; then
-              TELEMETRY_MATRIX_JSON="$MATRIX_JSON"
-            else
-              TELEMETRY_MATRIX_JSON="$PROD_MATRIX_JSON"
-            fi
-          else
-            RUN_TELEMETRY="false"
-            TELEMETRY_MATRIX_JSON="[]"
-          fi
-
-          # ----- notification policy outputs --------------------------------
-          # Notification matrix: dispatch runs notify for all components; push runs notify
-          # only for prod-targeted components (push never reaches prod, so this is a no-op
-          # guard that avoids spamming notifications for routine dev-targeting push events).
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            NOTIFY_MATRIX_JSON="$MATRIX_JSON"
-          else
-            NOTIFY_MATRIX_JSON="$PROD_MATRIX_JSON"
-          fi
-
-          # ----- debug output and workflow outputs ---------------------------
-          echo "Calculated Matrix:           $MATRIX_JSON"
-          echo "Calculated Prod Matrix:      $PROD_MATRIX_JSON"
-          echo "Calculated Env Matrix:       $ENV_MATRIX_JSON"
-          echo "Run Telemetry Gate:          $RUN_TELEMETRY"
-          echo "Calculated Telemetry Matrix: $TELEMETRY_MATRIX_JSON"
-          echo "Calculated Notify Matrix:    $NOTIFY_MATRIX_JSON"
-
-          echo "matrix=$MATRIX_JSON"                     >> "$GITHUB_OUTPUT"
-          echo "prod_matrix=$PROD_MATRIX_JSON"           >> "$GITHUB_OUTPUT"
-          echo "env_matrix=$ENV_MATRIX_JSON"             >> "$GITHUB_OUTPUT"
-          echo "run_telemetry_gate=$RUN_TELEMETRY"       >> "$GITHUB_OUTPUT"
-          echo "telemetry_matrix=$TELEMETRY_MATRIX_JSON" >> "$GITHUB_OUTPUT"
-          echo "notify_matrix=$NOTIFY_MATRIX_JSON"       >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------
   # 2. BUILD & DEPLOY (Matrix for Frontend / Backend)
@@ -416,28 +316,18 @@ jobs:
         # dispatch -> full matrix (all components in scope get a notification)
         # push     -> prod_matrix (no-op for now since push never reaches prod)
         include: ${{ fromJson(needs.detect-changes.outputs.notify_matrix) }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS credentials for notification publishing
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
-
-      - name: Publish deploy-started notification
-        uses: ./.github/actions/send-release-notification
-        with:
-          topic_arn: ${{ matrix.environment == 'prod' && vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || vars.DEV_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
-          aws_region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
-          notification_event: deploy_started
-          project_name: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          component: ${{ matrix.component }}
-          status: in_progress
-          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
-          change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
-          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-          summary: ${{ github.event_name == 'workflow_dispatch' && 'Manual deploy request entered the reusable deploy/probe/telemetry workflow graph.' || 'Push-triggered deploy entered the reusable deploy/probe/telemetry workflow graph.' }}
+    uses: ./.github/workflows/reusable-send-notification.yml
+    with:
+      environment: ${{ matrix.environment }}
+      component: ${{ matrix.component }}
+      notification_event: deploy_started
+      status: in_progress
+      project_name: ${{ vars.PROJECT_NAME }}
+      release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+      change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
+      workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+      summary: ${{ github.event_name == 'workflow_dispatch' && 'Manual deploy request entered the reusable deploy/probe/telemetry workflow graph.' || 'Push-triggered deploy entered the reusable deploy/probe/telemetry workflow graph.' }}
+    secrets: inherit
 
   # ---------------------------------------------------------
   # 3. POST-DEPLOY PROBE (Runs once per environment)
@@ -643,7 +533,7 @@ jobs:
   seed-database:
     name: Build & Run DB Seeder
     needs: [predeploy-guardrails, detect-changes]
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeding == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeding == true && needs.detect-changes.outputs.env_matrix != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -661,11 +551,12 @@ jobs:
       seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || '' }}
     secrets: inherit
 
-  # ---------------------------------------------------------
-  # 8. TERMINAL NOTIFICATIONS
-  # ---------------------------------------------------------
-  notify-deploy-outcome:
-    name: Notify Deploy Outcome ${{ matrix.component }} (${{ matrix.environment }})
+  # ----- Deploy outcome resolution -----
+  # Computes the terminal deploy state from upstream job results. This must be an
+  # inline job because it needs access to needs.<job>.result which is only available
+  # in the calling workflow, not inside a reusable workflow.
+  resolve-deploy-outcome:
+    name: Resolve Deploy Outcome ${{ matrix.component }} (${{ matrix.environment }})
     needs:
       [
         predeploy-guardrails,
@@ -683,6 +574,11 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      event: ${{ steps.status.outputs.event }}
+      status: ${{ steps.status.outputs.status }}
+      summary: ${{ steps.status.outputs.summary }}
     steps:
       - name: Resolve terminal deploy event
         id: status
@@ -747,29 +643,38 @@ jobs:
           echo "status=$STATUS"   >> "$GITHUB_OUTPUT"
           echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
 
-      - name: Configure AWS credentials for notification publishing
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+          # ----- job summary render -------------------------------------------
+          {
+            echo "## Deploy Outcome: $EVENT"
+            echo "**Status**: \`$STATUS\`"
+            echo "**Summary**: $SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish terminal deploy notification
-        uses: ./.github/actions/send-release-notification
-        with:
-          topic_arn: ${{ matrix.environment == 'prod' && vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || vars.DEV_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
-          aws_region: ${{ matrix.environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
-          notification_event: ${{ steps.status.outputs.event }}
-          project_name: ${{ vars.PROJECT_NAME }}
-          environment: ${{ matrix.environment }}
-          component: ${{ matrix.component }}
-          status: ${{ steps.status.outputs.status }}
-          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
-          change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
-          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-          summary: ${{ steps.status.outputs.summary }}
+  # ----- Deploy outcome notification -----
+  notify-deploy-outcome:
+    name: Notify Deploy Outcome ${{ matrix.component }} (${{ matrix.environment }})
+    needs: [predeploy-guardrails, detect-changes, resolve-deploy-outcome]
+    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    uses: ./.github/workflows/reusable-send-notification.yml
+    with:
+      environment: ${{ matrix.environment }}
+      component: ${{ matrix.component }}
+      notification_event: ${{ needs.resolve-deploy-outcome.outputs.event }}
+      status: ${{ needs.resolve-deploy-outcome.outputs.status }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+      change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
+      workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+      summary: ${{ needs.resolve-deploy-outcome.outputs.summary }}
+    secrets: inherit
 
-  notify-manual-rollback-outcome:
-    name: Notify Manual Rollback Outcome (${{ inputs.target_environment }})
+  # ----- Manual rollback outcome resolution -----
+  resolve-manual-rollback-outcome:
+    name: Resolve Manual Rollback Outcome (${{ inputs.target_environment }})
     needs:
       [
         predeploy-guardrails,
@@ -779,6 +684,11 @@ jobs:
       ]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      event: ${{ steps.status.outputs.event }}
+      status: ${{ steps.status.outputs.status }}
+      summary: ${{ steps.status.outputs.summary }}
     steps:
       - name: Resolve terminal manual rollback event
         id: status
@@ -814,24 +724,27 @@ jobs:
           echo "status=$STATUS"   >> "$GITHUB_OUTPUT"
           echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
 
-      - name: Configure AWS credentials for notification publishing
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
-          aws-region: ${{ inputs.target_environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
+          # ----- job summary render -------------------------------------------
+          {
+            echo "## Manual Rollback Outcome: $EVENT"
+            echo "**Status**: \`$STATUS\`"
+            echo "**Summary**: $SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish manual rollback notification
-        uses: ./.github/actions/send-release-notification
-        with:
-          topic_arn: ${{ inputs.target_environment == 'prod' && vars.PROD_RELEASE_NOTIFICATIONS_TOPIC_ARN || vars.DEV_RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
-          aws_region: ${{ inputs.target_environment == 'prod' && (vars.PROD_AWS_REGION || 'us-east-2') || (vars.DEV_AWS_REGION || 'us-east-1') }}
-          notification_event: ${{ steps.status.outputs.event }}
-          project_name: ${{ vars.PROJECT_NAME }}
-          environment: ${{ inputs.target_environment }}
-          component: ${{ inputs.rollback_component }}
-          status: ${{ steps.status.outputs.status }}
-          release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
-          change_ticket: ${{ inputs.change_ticket || '' }}
-          workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-          summary: ${{ steps.status.outputs.summary }}
-
+  # ----- Manual rollback outcome notification -----
+  notify-manual-rollback-outcome:
+    name: Notify Manual Rollback Outcome (${{ inputs.target_environment }})
+    needs: [predeploy-guardrails, resolve-manual-rollback-outcome]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
+    uses: ./.github/workflows/reusable-send-notification.yml
+    with:
+      environment: ${{ inputs.target_environment }}
+      component: ${{ inputs.rollback_component }}
+      notification_event: ${{ needs.resolve-manual-rollback-outcome.outputs.event }}
+      status: ${{ needs.resolve-manual-rollback-outcome.outputs.status }}
+      project_name: ${{ vars.PROJECT_NAME }}
+      release_version: ${{ needs.predeploy-guardrails.outputs.resolved_release_version }}
+      change_ticket: ${{ inputs.change_ticket || '' }}
+      workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+      summary: ${{ needs.resolve-manual-rollback-outcome.outputs.summary }}
+    secrets: inherit

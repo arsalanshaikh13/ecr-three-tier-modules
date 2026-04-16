@@ -1,0 +1,86 @@
+name: Reusable Send Notification
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment for the notification (used for region and topic ARN resolution)."
+        required: true
+        type: string
+      component:
+        description: "Optional component name for component-scoped events."
+        required: false
+        type: string
+        default: ""
+      notification_event:
+        description: "High-level event slug such as deploy_started, deploy_succeeded, rollback_triggered."
+        required: true
+        type: string
+      status:
+        description: "Machine-friendly status label such as success, failure, recovered, degraded, in_progress."
+        required: true
+        type: string
+      summary:
+        description: "Human-readable summary or reason for the notification."
+        required: false
+        type: string
+        default: ""
+      project_name:
+        description: "Project name shown in the notification subject/body."
+        required: true
+        type: string
+      release_version:
+        description: "Optional immutable release version."
+        required: false
+        type: string
+        default: ""
+      change_ticket:
+        description: "Optional change ticket or approval reference."
+        required: false
+        type: string
+        default: ""
+      workflow_url:
+        description: "URL of the workflow run that produced this notification."
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  send-notification:
+    name: Send Notification (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Bind the job to the target environment so AWS credentials and environment-scoped
+    # vars (region, topic ARN) resolve correctly for the intended deployment surface.
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Publish release notification
+        uses: ./.github/actions/send-release-notification
+        with:
+          # Region and topic resolution is now centralized here instead of being
+          # duplicated across every inline notification step in deploy.yml.
+          # Environment-scoped vars.AWS_REGION and vars.RELEASE_NOTIFICATIONS_TOPIC_ARN
+          # resolve automatically because the job is bound to inputs.environment.
+          topic_arn: ${{ vars.RELEASE_NOTIFICATIONS_TOPIC_ARN || '' }}
+          aws_region: ${{ vars.AWS_REGION }}
+          notification_event: ${{ inputs.notification_event }}
+          project_name: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          component: ${{ inputs.component }}
+          status: ${{ inputs.status }}
+          release_version: ${{ inputs.release_version }}
+          change_ticket: ${{ inputs.change_ticket }}
+          workflow_url: ${{ inputs.workflow_url }}
+          summary: ${{ inputs.summary }}

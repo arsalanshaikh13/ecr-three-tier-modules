@@ -1,0 +1,179 @@
+name: Compute Deploy Matrix
+description: >-
+  Computes the component×environment deploy matrix and its derivative subsets
+  (prod-only, env-only, telemetry, notify). Extracted from deploy.yml so the
+  matrix factory logic can be unit-tested independently.
+
+inputs:
+  event_name:
+    description: "GitHub event name (push or workflow_dispatch)."
+    required: true
+  frontend_changed:
+    description: "Whether the frontend path changed (push events only)."
+    required: false
+    default: "false"
+  backend_changed:
+    description: "Whether the backend path changed (push events only)."
+    required: false
+    default: "false"
+  action_type:
+    description: "Action type from workflow_dispatch (deploy or rollback)."
+    required: false
+    default: "deploy"
+  target_environment:
+    description: "Target environment from workflow_dispatch (dev, prod, or all)."
+    required: false
+    default: "dev"
+  frontend_image_strategy:
+    description: "Frontend image strategy from workflow_dispatch (build, fetch, skip)."
+    required: false
+    default: "build"
+  backend_image_strategy:
+    description: "Backend image strategy from workflow_dispatch (build, fetch, skip)."
+    required: false
+    default: "build"
+  enable_telemetry_gate:
+    description: "Whether the telemetry gate toggle was enabled (dispatch only)."
+    required: false
+    default: "false"
+
+outputs:
+  matrix:
+    description: "Component×environment object matrix consumed by build-and-deploy and rollback jobs."
+    value: ${{ steps.compute.outputs.matrix }}
+  prod_matrix:
+    description: "Prod-only subset of the matrix."
+    value: ${{ steps.compute.outputs.prod_matrix }}
+  env_matrix:
+    description: "Environment-only list for per-environment jobs (probe, seed)."
+    value: ${{ steps.compute.outputs.env_matrix }}
+  run_telemetry_gate:
+    description: "Pre-computed boolean for telemetry gate condition."
+    value: ${{ steps.compute.outputs.run_telemetry_gate }}
+  telemetry_matrix:
+    description: "Pre-computed matrix for telemetry gate jobs."
+    value: ${{ steps.compute.outputs.telemetry_matrix }}
+  notify_matrix:
+    description: "Pre-computed matrix for deploy-started notifications."
+    value: ${{ steps.compute.outputs.notify_matrix }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute deploy matrix
+      id: compute
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # ----- matrix input setup -----------------------------------------
+        COMPONENTS=()
+        TARGET_ENVS=()
+
+        # ----- push event component/environment policy --------------------
+        # 1. PUSH EVENT: build only what changed; always target dev only.
+        if [ "${{ inputs.event_name }}" == "push" ]; then
+          if [ "${{ inputs.frontend_changed }}" == "true" ]; then COMPONENTS+=("frontend"); fi
+          if [ "${{ inputs.backend_changed }}" == "true" ];  then COMPONENTS+=("backend");  fi
+          TARGET_ENVS=("dev")
+
+        # ----- manual dispatch component/environment policy ---------------
+        # 2. MANUAL TRIGGER: resolve components from the image-strategy choice inputs.
+        elif [ "${{ inputs.event_name }}" == "workflow_dispatch" ]; then
+
+          # Manual rollback uses its own job path. Emit empty matrices and stop so that
+          # the deploy/probe/telemetry graph is fully skipped.
+          if [ "${{ inputs.action_type }}" == "rollback" ]; then
+            echo "matrix=[]"                >> "$GITHUB_OUTPUT"
+            echo "prod_matrix=[]"           >> "$GITHUB_OUTPUT"
+            echo "env_matrix=[]"            >> "$GITHUB_OUTPUT"
+            echo "run_telemetry_gate=false" >> "$GITHUB_OUTPUT"
+            echo "telemetry_matrix=[]"      >> "$GITHUB_OUTPUT"
+            echo "notify_matrix=[]"         >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # "skip" means the operator explicitly excluded this component from the run.
+          if [ "${{ inputs.frontend_image_strategy }}" != "skip" ]; then COMPONENTS+=("frontend"); fi
+          if [ "${{ inputs.backend_image_strategy }}"  != "skip" ]; then COMPONENTS+=("backend");  fi
+
+          if [ "${{ inputs.target_environment }}" == "all" ]; then
+            TARGET_ENVS=("dev" "prod")
+          else
+            TARGET_ENVS=("${{ inputs.target_environment }}")
+          fi
+        fi
+
+        # ----- core matrix rendering --------------------------------------
+        # Build component×environment object matrix: [{component, environment}, ...]
+        if [ ${#COMPONENTS[@]} -eq 0 ] || [ ${#TARGET_ENVS[@]} -eq 0 ]; then
+          MATRIX_JSON="[]"
+        else
+          MATRIX_JSON=$(jq -cn \
+            --argjson comps "$(printf '%s\n' "${COMPONENTS[@]}" | jq -R . | jq -s .)" \
+            --argjson envs  "$(printf '%s\n' "${TARGET_ENVS[@]}"  | jq -R . | jq -s .)" \
+            '[ $comps[] as $c | $envs[] as $e | {component: $c, environment: $e} ]')
+        fi
+
+        # ----- environment-only matrix ------------------------------------
+        # Environment-only matrix for jobs that run once per environment (probe, seed).
+        if [ ${#TARGET_ENVS[@]} -eq 0 ]; then
+          ENV_MATRIX_JSON="[]"
+        else
+          ENV_MATRIX_JSON=$(printf '%s\n' "${TARGET_ENVS[@]}" | jq -R . | jq -s -c .)
+        fi
+
+        # ----- prod-only subset -------------------------------------------
+        # Prod-only subset -- lets downstream jobs apply "prod always, dev only on explicit
+        # request" logic without putting conditional expressions inside matrix.include keys.
+        if [ "$MATRIX_JSON" = "[]" ]; then
+          PROD_MATRIX_JSON="[]"
+        else
+          PROD_MATRIX_JSON=$(printf '%s' "$MATRIX_JSON" \
+            | jq -c '[ .[] | select(.environment == "prod") ]')
+        fi
+
+        # ----- telemetry policy outputs -----------------------------------
+        # Pre-compute the telemetry gate flag so downstream if: blocks stay simple.
+        # Telemetry fires when:
+        #   a) operator enabled the toggle on a manual run with at least one component, OR
+        #   b) prod is in scope (prod always gets the telemetry gate, toggle is irrelevant).
+        DISPATCH_TELEMETRY="${{ inputs.enable_telemetry_gate }}"
+        if [[ ("$DISPATCH_TELEMETRY" == "true" && "$MATRIX_JSON" != "[]") || "$PROD_MATRIX_JSON" != "[]" ]]; then
+          RUN_TELEMETRY="true"
+          # When telemetry is enabled for a manual run use the full matrix; push events
+          # (dev-only) never hit prod so prod_matrix already captures the right scope.
+          if [[ "$DISPATCH_TELEMETRY" == "true" && "$MATRIX_JSON" != "[]" ]]; then
+            TELEMETRY_MATRIX_JSON="$MATRIX_JSON"
+          else
+            TELEMETRY_MATRIX_JSON="$PROD_MATRIX_JSON"
+          fi
+        else
+          RUN_TELEMETRY="false"
+          TELEMETRY_MATRIX_JSON="[]"
+        fi
+
+        # ----- notification policy outputs --------------------------------
+        # Notification matrix: dispatch runs notify for all components; push runs notify
+        # only for prod-targeted components (push never reaches prod, so this is a no-op
+        # guard that avoids spamming notifications for routine dev-targeting push events).
+        if [ "${{ inputs.event_name }}" == "workflow_dispatch" ]; then
+          NOTIFY_MATRIX_JSON="$MATRIX_JSON"
+        else
+          NOTIFY_MATRIX_JSON="$PROD_MATRIX_JSON"
+        fi
+
+        # ----- debug output and workflow outputs ---------------------------
+        echo "Calculated Matrix:           $MATRIX_JSON"
+        echo "Calculated Prod Matrix:      $PROD_MATRIX_JSON"
+        echo "Calculated Env Matrix:       $ENV_MATRIX_JSON"
+        echo "Run Telemetry Gate:          $RUN_TELEMETRY"
+        echo "Calculated Telemetry Matrix: $TELEMETRY_MATRIX_JSON"
+        echo "Calculated Notify Matrix:    $NOTIFY_MATRIX_JSON"
+
+        echo "matrix=$MATRIX_JSON"                     >> "$GITHUB_OUTPUT"
+        echo "prod_matrix=$PROD_MATRIX_JSON"           >> "$GITHUB_OUTPUT"
+        echo "env_matrix=$ENV_MATRIX_JSON"             >> "$GITHUB_OUTPUT"
+        echo "run_telemetry_gate=$RUN_TELEMETRY"       >> "$GITHUB_OUTPUT"
+        echo "telemetry_matrix=$TELEMETRY_MATRIX_JSON" >> "$GITHUB_OUTPUT"
+        echo "notify_matrix=$NOTIFY_MATRIX_JSON"       >> "$GITHUB_OUTPUT"

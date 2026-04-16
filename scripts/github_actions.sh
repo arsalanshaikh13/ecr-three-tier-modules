@@ -1,4 +1,23 @@
 #!/bin/bash
+
+# first setup auth login
+# source gh_glab_scripts/.env_github
+# SSH_PATH="$HOME/.ssh/id_ed25519"
+# echo "$GH_TOKEN" | gh auth login --with-token
+
+# gh config set git_protocol ssh -h github.com
+# gh auth status
+
+# # --- 3. RE-AUTHENTICATE SCOPES (GitHub) ---
+# echo "🔄 Refreshing GitHub Scopes for SSH Management..."
+# gh auth refresh -h github.com -s admin:public_key,admin:ssh_signing_key
+
+# # --- 4. ADD SSH KEYS TO ACCOUNTS ---
+# echo "📤 Uploading SSH Keys..."
+# gh ssh-key add "${SSH_PATH}.pub" --title "Automation-Key-$(date +%F)"
+
+
+# git commands
 # git add .; git commit -m "host network specific changes made";
 # git tag nextjs-host; 
 # git checkout head^
@@ -48,17 +67,17 @@ REPO_NAME="ecr-three-tier-modules"
 #
 # Uncomment and run when you want to create or refresh the environment vars.
 
-# set_env_var() {
-#   local env_name="$1"
-#   local var_name="$2"
-#   local var_value="$3"
-#
-#   gh variable set "$var_name" \
-#     --repo "$GH_USER/$REPO_NAME" \
-#     --env "$env_name" \
-#     --body "$var_value"
-# }
-#
+set_env_var() {
+  local env_name="$1"
+  local var_name="$2"
+  local var_value="$3"
+
+  gh variable set "$var_name" \
+    --repo "$GH_USER/$REPO_NAME" \
+    --env "$env_name" \
+    --body "$var_value"
+}
+
 # # -----------------------------
 # # Required baseline variables
 # # -----------------------------
@@ -87,14 +106,14 @@ REPO_NAME="ecr-three-tier-modules"
 # set_env_var dev  BACKEND_SERVICE_SECURITY_GROUP_NAME "ecs-node-backend-sg-dev"
 # set_env_var dev  FRONTEND_SERVICE_ASSIGN_PUBLIC_IP "DISABLED"
 # set_env_var dev  BACKEND_SERVICE_ASSIGN_PUBLIC_IP "DISABLED"
-#
+
 # set_env_var prod FRONTEND_SERVICE_SUBNET_TAG_VALUES "pri-sub-3a,pri-sub-4b"
 # set_env_var prod BACKEND_SERVICE_SUBNET_TAG_VALUES "pri-sub-5a,pri-sub-6b"
 # set_env_var prod FRONTEND_SERVICE_SECURITY_GROUP_NAME "ecs-node-frontend-sg-prod"
 # set_env_var prod BACKEND_SERVICE_SECURITY_GROUP_NAME "ecs-node-backend-sg-prod"
 # set_env_var prod FRONTEND_SERVICE_ASSIGN_PUBLIC_IP "DISABLED"
 # set_env_var prod BACKEND_SERVICE_ASSIGN_PUBLIC_IP "DISABLED"
-#
+
 # # ----------------------------------------------------------------
 # # Recommended shared/default service variables for compatibility
 # # ----------------------------------------------------------------
@@ -122,13 +141,13 @@ REPO_NAME="ecr-three-tier-modules"
 # set_env_var dev  PROBE_SUBNET_TAG_VALUES "pri-sub-3a,pri-sub-4b"
 # set_env_var dev  PROBE_SECURITY_GROUP_NAME "ecs-node-frontend-sg-dev"
 # set_env_var dev  PROBE_ASSIGN_PUBLIC_IP "ENABLED"
-#
+
 # set_env_var prod PROBE_LAUNCH_TYPE "FARGATE"
 # set_env_var prod PROBE_NETWORK_MODE "awsvpc"
 # set_env_var prod PROBE_SUBNET_TAG_VALUES "pri-sub-3a,pri-sub-4b"
 # set_env_var prod PROBE_SECURITY_GROUP_NAME "ecs-node-frontend-sg-prod"
 # set_env_var prod PROBE_ASSIGN_PUBLIC_IP "ENABLED"
-#
+
 # # -----------------------------------------------------
 # # Recommended database seeder variables
 # # -----------------------------------------------------
@@ -139,13 +158,13 @@ REPO_NAME="ecr-three-tier-modules"
 # set_env_var dev  SEEDER_SUBNET_TAG_VALUES "pri-sub-5a,pri-sub-6b"
 # set_env_var dev  SEEDER_SECURITY_GROUP_NAME "ecs-node-backend-sg-dev"
 # set_env_var dev  SEEDER_ASSIGN_PUBLIC_IP "DISABLED"
-#
+
 # set_env_var prod SEEDER_LAUNCH_TYPE "EC2"
 # set_env_var prod SEEDER_NETWORK_MODE "non-awsvpc"
 # set_env_var prod SEEDER_SUBNET_TAG_VALUES "pri-sub-5a,pri-sub-6b"
 # set_env_var prod SEEDER_SECURITY_GROUP_NAME "ecs-node-backend-sg-prod"
 # set_env_var prod SEEDER_ASSIGN_PUBLIC_IP "DISABLED"
-#
+
 # # -----------------------------------------
 # # Optional prod governance variables
 # # -----------------------------------------
@@ -168,11 +187,11 @@ REPO_NAME="ecr-three-tier-modules"
 # # 3. write those values into GitHub Environment variables below
 # #
 # # You can set them manually if you already know the alarm names:
-# # set_env_var dev  FRONTEND_RELEASE_ALARM_NAMES "lirw-ecs-frontend-dev-target-5xx,lirw-ecs-frontend-dev-latency,lirw-ecs-frontend-dev-cpu-high,lirw-ecs-frontend-dev-memory-high"
-# # set_env_var dev  BACKEND_RELEASE_ALARM_NAMES "lirw-ecs-backend-dev-target-5xx,lirw-ecs-backend-dev-latency,lirw-ecs-backend-dev-cpu-high,lirw-ecs-backend-dev-memory-high"
-# # set_env_var prod FRONTEND_RELEASE_ALARM_NAMES "lirw-ecs-frontend-prod-target-5xx,lirw-ecs-frontend-prod-latency,lirw-ecs-frontend-prod-cpu-high,lirw-ecs-frontend-prod-memory-high"
-# # set_env_var prod BACKEND_RELEASE_ALARM_NAMES "lirw-ecs-backend-prod-target-5xx,lirw-ecs-backend-prod-latency,lirw-ecs-backend-prod-cpu-high,lirw-ecs-backend-prod-memory-high"
-# #
+# set_env_var dev  FRONTEND_RELEASE_ALARM_NAMES "lirw-ecs-frontend-dev-target-5xx,lirw-ecs-frontend-dev-latency,lirw-ecs-frontend-dev-cpu-high,lirw-ecs-frontend-dev-memory-high"
+# set_env_var dev  BACKEND_RELEASE_ALARM_NAMES "lirw-ecs-backend-dev-target-5xx,lirw-ecs-backend-dev-latency,lirw-ecs-backend-dev-cpu-high,lirw-ecs-backend-dev-memory-high"
+# set_env_var prod FRONTEND_RELEASE_ALARM_NAMES "lirw-ecs-frontend-prod-target-5xx,lirw-ecs-frontend-prod-latency,lirw-ecs-frontend-prod-cpu-high,lirw-ecs-frontend-prod-memory-high"
+# set_env_var prod BACKEND_RELEASE_ALARM_NAMES "lirw-ecs-backend-prod-target-5xx,lirw-ecs-backend-prod-latency,lirw-ecs-backend-prod-cpu-high,lirw-ecs-backend-prod-memory-high"
+
 # # Or derive them from Terraform outputs after each environment apply:
 # # DEV_FRONTEND_RELEASE_ALARMS="$(terraform -chdir=root output -raw frontend_release_alarm_names_csv)"
 # # DEV_BACKEND_RELEASE_ALARMS="$(terraform -chdir=root output -raw backend_release_alarm_names_csv)"
@@ -209,115 +228,143 @@ REPO_NAME="ecr-three-tier-modules"
 # Capture current time so we can identify the run we just triggered.
 START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-# Fail immediately if GitHub cannot dispatch the workflow. If this returns HTTP 422
-# while the branch file has workflow_dispatch, the default/main branch likely still
-# has an older workflow definition registered by GitHub.
+# ---------------------------------------------------------------------------
+# gh CLI dispatch examples
+# ---------------------------------------------------------------------------
+# All inputs below mirror deploy.yml workflow_dispatch inputs exactly.
+# Only pass inputs you want to override -- omitted inputs use their defaults.
+
+# --- Deploy to dev (both components, default EC2/non-awsvpc) ---
 # if ! gh workflow run "deploy.yml" \
-#   --ref multi-env-actions \
-#   -f action_type=rollback \
+#   --ref three-tier-multi-env \
+#   -f action_type=deploy \
 #   -f target_environment=dev \
-#   -f build_frontend=true \
-#   -f get_frontend=false \
-#   -f build_backend=true \
-#   -f get_backend=false \
-#   -f run_seeding=true \
-#   -f default_network_mode=awsvpc \
-#   -f default_launch_type=FARGATE; then
+#   -f frontend_image_strategy=build \
+#   -f backend_image_strategy=build \
+#   -f run_seeding=false \
+#   -f default_launch_type=EC2 \
+#   -f default_network_mode=non-awsvpc ; then
 #   echo "Failed to dispatch deploy.yml."
-#   echo "Check that the updated deploy.yml with workflow_dispatch exists on the default/main branch too."
+#   exit 1
+# fi
+# --- Deploy to dev (both components, default EC2/non-awsvpc) ---
+# if ! gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=deploy \
+#   -f target_environment=dev \
+#   -f frontend_image_strategy=build \
+#   -f backend_image_strategy=build \
+#   -f run_seeding=false \
+#   -f default_launch_type=EC2 \
+#   -f default_network_mode=non-awsvpc \
+#   -f enable_security_scan=false \
+#   -f enable_sbom=false \
+#   -f enable_telemetry_gate=false \
+#   -f observation_window_minutes=5 \
+#   -f vulnerability_threshold=CRITICAL; then
+#   echo "Failed to dispatch deploy.yml."
 #   exit 1
 # fi
 
+# --- Deploy to dev (frontend only, skip backend) ---
+# gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=deploy \
+#   -f target_environment=dev \
+#   -f frontend_image_strategy=build \
+#   -f backend_image_strategy=skip \
+#   -f run_seeding=false \
+#   -f default_launch_type=EC2 \
+#   -f default_network_mode=non-awsvpc
+
+
+# --- Deploy to dev (fetch existing images, no rebuild) ---
+# gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=deploy \
+#   -f target_environment=dev \
+#   -f frontend_image_strategy=fetch \
+#   -f backend_image_strategy=fetch
+
+# --- Deploy to prod (requires release_version and change_ticket) ---
+# gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=deploy \
+#   -f target_environment=prod \
+#   -f frontend_image_strategy=build \
+#   -f backend_image_strategy=build \
+#   -f release_version=v1.2.3 \
+#   -f change_ticket=CHG-1234 \
+#   -f enable_telemetry_gate=true \
+#   -f observation_window_minutes=10
+
+# --- Manual rollback (backend in dev) ---
+# gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=rollback \
+#   -f target_environment=dev \
+#   -f rollback_component=backend
+
+# --- Manual rollback with explicit task definition ARN ---
+# gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=rollback \
+#   -f target_environment=dev \
+#   -f rollback_component=backend \
+#   -f rollback_task_definition_arn="arn:aws:ecs:us-east-1:750702272407:task-definition/lirw-ecs-backend-dev:42"
+
+# --- Deploy with Fargate/awsvpc + seeding ---
+# gh workflow run "deploy.yml" \
+#   --ref three-tier-multi-env \
+#   -f action_type=deploy \
+#   -f target_environment=dev \
+#   -f frontend_image_strategy=build \
+#   -f backend_image_strategy=build \
+#   -f run_seeding=true \
+#   -f default_launch_type=FARGATE \
+#   -f default_network_mode=awsvpc
+
+# ---------------------------------------------------------------------------
+# curl dispatch examples
+# ---------------------------------------------------------------------------
+
+# --- Deploy to dev (curl) ---
 # curl --fail-with-body -X POST \
 #   -H "Authorization: token $(gh auth token)" \
 #   -H "Accept: application/vnd.github.v3+json" \
 #   "https://api.github.com/repos/$GH_USER/$REPO_NAME/actions/workflows/deploy.yml/dispatches" \
 #   -d '{
-#     "ref": "multi-env-actions",
+#     "ref": "three-tier-multi-env",
 #     "inputs": {
 #       "action_type": "deploy",
 #       "target_environment": "dev",
-#       "build_frontend": "true",
-#       "get_frontend": "false",
-#       "build_backend": "true",
-#       "get_backend": "false",
-#       "run_seeding": "true".
-        # "default_network_mode": "non-awsvpc",
-        # "default_launch_type": "EC2"
+#       "frontend_image_strategy": "build",
+#       "backend_image_strategy": "build",
+#       "run_seeding": "false",
+#       "default_launch_type": "EC2",
+#       "default_network_mode": "non-awsvpc",
+#       "enable_security_scan": "false",
+#       "enable_sbom": "false",
+#       "enable_telemetry_gate": "false",
+#       "observation_window_minutes": "5",
+#       "vulnerability_threshold": "CRITICAL"
 #     }
 #   }'
 
-
+# --- Manual rollback (curl) ---
 # curl --fail-with-body -X POST \
 #   -H "Authorization: token $(gh auth token)" \
 #   -H "Accept: application/vnd.github.v3+json" \
-#   https://api.github.com/repos/$GH_USER/$REPO_NAME/actions/workflows/promotion.yml/dispatches \
+#   "https://api.github.com/repos/$GH_USER/$REPO_NAME/actions/workflows/deploy.yml/dispatches" \
 #   -d '{
-#     "ref": "multi-env-actions",
+#     "ref": "three-tier-multi-env",
 #     "inputs": {
-#       "source_environment": "dev",
-#       "promote_frontend": "true",
-#       "promote_backend": "true",
-#       "run_seeding_in_prod": "false",
-#       "default_network_mode": "non-awsvpc",
-#       "default_launch_type": "EC2"
+#       "action_type": "rollback",
+#       "target_environment": "dev",
+#       "rollback_component": "backend"
 #     }
 #   }'
-# Small delay to allow GitHub to register the new run in run list.
-# sleep 3
 
-# # Fetch both internal run ID and human-readable run number for the latest dispatch after START_TS.
-# RUN_ID=$(gh run list \
-#   --repo "$GH_USER/$REPO_NAME" \
-#   --workflow "deploy.yml" \
-#   --branch multi-env-actions \
-#   --event workflow_dispatch \
-#   --limit 20 \
-#   --json databaseId,number,createdAt \
-#   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .databaseId")
-
-# RUN_NO=$(gh run list \
-#   --repo "$GH_USER/$REPO_NAME" \
-#   --workflow "deploy.yml" \
-#   --branch multi-env-actions \
-#   --event workflow_dispatch \
-#   --limit 20 \
-#   --json number,createdAt \
-#   --jq "map(select(.createdAt >= \"$START_TS\")) | first | .number")
-
-echo "Triggered deploy workflow: RUN_ID=$RUN_ID RUN_NO=$RUN_NO"
-if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-  echo "Failed to resolve the dispatched run id."
-  exit 1
-fi
-
-gh run view "$RUN_ID" --repo "$GH_USER/$REPO_NAME"
-
-# one line trigger
-gh run list --repo "$GH_USER/$REPO_NAME" --workflow "deploy.yml" --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
-# gh run list --repo "$GH_USER/$REPO_NAME" --workflow "deploy.yml" --branch multi-env-actions --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'
-
-#   # Variables
-# ORG="arsalanshaikh13"
-# REPO="ecr-three-tier"
-# WORKFLOW_ID="../.github/workflows/deploy.yml" # You can also use the numeric ID
-
-# curl -L \
-#   -X POST \
-#   -H "Accept: application/vnd.github+json" \
-#   -H "Authorization: Bearer $GITHUB_TOKEN" \
-#   -H "X-GitHub-Api-Version: 2022-11-28" \
-#   https://api.github.com/repos/$ORG/$REPO/actions/workflows/$WORKFLOW_ID/dispatches \
-#   -d '{
-#     "ref": "main",
-#     "inputs": {
-#       "build_frontend": "true",
-#       "get_frontend": "false",
-#       "build_backend": "true",
-#       "get_backend": "false",
-#       "run_seeding": "false"
-#     }
-#   }'
 
 # -----------------------------------------------------------------------------
 # Prod Approval Environment Setup
@@ -339,32 +386,46 @@ gh run list --repo "$GH_USER/$REPO_NAME" --workflow "deploy.yml" --branch multi-
 #   so the practical guardrail here is branch restriction plus workflow inputs
 
 # Example branch to allow through prod approval:
-APPROVAL_BRANCH="multi-env-actions"
+APPROVAL_BRANCH="three-tier-multi-env"
 
 # Resolve your GitHub user id once so required reviewers can be updated through API.
+# NOTE: no leading slash on the endpoint -- Git Bash on Windows rewrites /users/ to a filesystem path.
 APPROVER_USER="$GH_USER"
-APPROVER_USER_ID=$(gh api "/users/$APPROVER_USER" --jq '.id')
+APPROVER_USER_ID=$(gh api "users/$APPROVER_USER" --jq '.id')
 
-# Create or update the dedicated approval environment.
-# Keep required reviewers here, not on `prod`, if you want only one approval gate.
-gh api \
-  --method PUT \
-  -H "Accept: application/vnd.github+json" \
-  "/repos/$GH_USER/$REPO_NAME/environments/prod-approval" \
-  -f wait_timer=0 \
-  -F prevent_self_review=false \
-  -F deployment_branch_policy[protected_branches]=false \
-  -F deployment_branch_policy[custom_branch_policies]=true \
-  -f reviewers[0][type]=User \
-  -F reviewers[0][id]="$APPROVER_USER_ID"
+# # Create or update the dedicated approval environment.
+# # Keep required reviewers here, not on `prod`, if you want only one approval gate.
+# # Uses --input with raw JSON because:
+# #   - wait_timer must be integer (not string)
+# #   - reviewers must be a JSON array (gh -f/-F field syntax produces an object)
+# gh api \
+#   --method PUT \
+#   -H "Accept: application/vnd.github+json" \
+#   "repos/$GH_USER/$REPO_NAME/environments/prod-approval" \
+#   --input - <<EOF
+# {
+#   "wait_timer": 0,
+#   "prevent_self_review": false,
+#   "reviewers": [
+#     {
+#       "type": "User",
+#       "id": $APPROVER_USER_ID
+#     }
+#   ],
+#   "deployment_branch_policy": {
+#     "protected_branches": false,
+#     "custom_branch_policies": true
+#   }
+# }
+# EOF
 
-# Restrict prod-approval to the branch you use for controlled promotion tests.
-# GitHub models branch policies as deployment branch policies attached to the environment.
-gh api \
-  --method POST \
-  -H "Accept: application/vnd.github+json" \
-  "/repos/$GH_USER/$REPO_NAME/environments/prod-approval/deployment-branch-policies" \
-  -f name="$APPROVAL_BRANCH"
+# # Restrict prod-approval to the branch you use for controlled promotion tests.
+# # GitHub models branch policies as deployment branch policies attached to the environment.
+# gh api \
+#   --method POST \
+#   -H "Accept: application/vnd.github+json" \
+#   "repos/$GH_USER/$REPO_NAME/environments/prod-approval/deployment-branch-policies" \
+#   -f name="$APPROVAL_BRANCH"
 
 # Create or update the execution environment separately.
 # Recommendation: keep vars/secrets here, but do not also require reviewers if you want
@@ -379,7 +440,7 @@ gh api \
 #   -F deployment_branch_policy[custom_branch_policies]=false
 
 # Optional: inspect the configured environments after setup.
-gh api "/repos/$GH_USER/$REPO_NAME/environments"
+gh api "repos/$GH_USER/$REPO_NAME/environments"
 
 # -----------------------------------------------------------------------------
 # Terraform Output -> GitHub Environment Variable Sync Helpers
