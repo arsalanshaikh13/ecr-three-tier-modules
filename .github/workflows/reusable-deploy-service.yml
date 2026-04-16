@@ -189,6 +189,7 @@ jobs:
       - name: Persist deployment metadata for later jobs
         shell: bash
         run: |
+          # ----- deployment metadata rendering -------------------------------
           # Persist deploy metadata once during deployment so probe and rollback jobs can consume
           # the same identifiers instead of rediscovering mutable ECS state later on.
           cat > deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json <<EOF
@@ -222,6 +223,7 @@ jobs:
         id: service-execution
         shell: bash
         run: |
+          # ----- input normalization ----------------------------------------
           # Keep the reusable workflow generic, but let it understand component-tier fallbacks.
           # This avoids hardcoding subnet IDs while still allowing frontend and backend to move
           # onto different private subnet groups without breaking older callers immediately.
@@ -230,10 +232,12 @@ jobs:
           SUBNET_TAG_VALUES="${{ inputs.subnet_tag_values }}"
           ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
+          # ----- network mode fallback --------------------------------------
           if [ -z "$NETWORK_MODE" ]; then
             NETWORK_MODE="${{ vars.SERVICE_NETWORK_MODE || 'non-awsvpc' }}"
           fi
 
+          # ----- component-aware network defaults ----------------------------
           if [ -z "$SECURITY_GROUP_NAME" ]; then
             if [ "${{ inputs.component }}" = "frontend" ]; then
               SECURITY_GROUP_NAME="${{ vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}"
@@ -258,6 +262,7 @@ jobs:
             fi
           fi
 
+          # ----- action outputs ----------------------------------------------
           echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
           echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
           echo "subnet_tag_values=$SUBNET_TAG_VALUES" >> "$GITHUB_OUTPUT"

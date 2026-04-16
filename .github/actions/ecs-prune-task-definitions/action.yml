@@ -1,0 +1,272 @@
+name: ECS Prune Task Definitions
+description: Deregister stale ECS task definition revisions while protecting trusted and recently successful rollback targets.
+
+inputs:
+  project:
+    description: Project name prefix used in ECS family naming and SSM parameter paths.
+    required: true
+  environment:
+    description: Deployment environment such as dev or prod.
+    required: true
+  bucket:
+    description: S3 bucket that stores deployment manifests and manifest indexes.
+    required: true
+  keep_latest_active_count:
+    description: Number of newest ACTIVE revisions to keep per family even if they are otherwise unreferenced.
+    required: false
+    default: "2"
+  retain_successful_lineage_count:
+    description: Number of recent successful or rolled-back manifest entries to keep per component family.
+    required: false
+    default: "10"
+  dry_run:
+    description: When true, print candidate changes without deregistering or deleting task definitions.
+    required: false
+    default: "true"
+  families_json:
+    description: Optional JSON array overriding the default family-to-component mapping.
+    required: false
+    default: ""
+
+outputs:
+  deregister_count:
+    description: Number of ACTIVE task definition revisions selected for deregistration.
+    value: ${{ steps.cleanup.outputs.deregister_count }}
+  delete_count:
+    description: Number of INACTIVE task definition revisions selected for deletion.
+    value: ${{ steps.cleanup.outputs.delete_count }}
+  protected_count:
+    description: Number of unique task definition revisions protected from cleanup.
+    value: ${{ steps.cleanup.outputs.protected_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate dependencies
+      shell: bash
+      run: |
+        missing=()
+        command -v aws >/dev/null 2>&1 || missing+=("aws-cli")
+        command -v jq  >/dev/null 2>&1 || missing+=("jq")
+
+        if [ "${#missing[@]}" -gt 0 ]; then
+          echo "::error::Missing required tools: ${missing[*]}"
+          exit 1
+        fi
+
+    - id: cleanup
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        BUCKET: ${{ inputs.bucket }}
+        KEEP_LATEST_ACTIVE_COUNT: ${{ inputs.keep_latest_active_count }}
+        RETAIN_SUCCESSFUL_LINEAGE_COUNT: ${{ inputs.retain_successful_lineage_count }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        FAMILIES_JSON_INPUT: ${{ inputs.families_json }}
+      run: |
+        set -euo pipefail
+
+        # ----- temporary files and shell safety --------------------------------
+        TMPFILES=()
+        cleanup_tmpfiles() {
+          if [ "${#TMPFILES[@]}" -gt 0 ]; then
+            rm -f "${TMPFILES[@]}"
+          fi
+        }
+        trap cleanup_tmpfiles EXIT
+
+        mktemp_tracked() {
+          local file
+          file="$(mktemp)"
+          TMPFILES+=("$file")
+          echo "$file"
+        }
+
+        # ----- input validation ------------------------------------------------
+        if ! [[ "$KEEP_LATEST_ACTIVE_COUNT" =~ ^[0-9]+$ ]]; then
+          echo "keep_latest_active_count must be a non-negative integer." >&2
+          exit 1
+        fi
+
+        if ! [[ "$RETAIN_SUCCESSFUL_LINEAGE_COUNT" =~ ^[0-9]+$ ]]; then
+          echo "retain_successful_lineage_count must be a non-negative integer." >&2
+          exit 1
+        fi
+
+        # ----- family resolution ----------------------------------------------
+        if [ -n "$FAMILIES_JSON_INPUT" ]; then
+          FAMILIES_JSON="$FAMILIES_JSON_INPUT"
+        else
+          FAMILIES_JSON=$(jq -cn \
+            --arg project "$PROJECT" \
+            --arg environment "$ENVIRONMENT" \
+            '[
+              {family: ($project + "-frontend"), component: "frontend", protect_ssm: true},
+              {family: ($project + "-backend"), component: "backend", protect_ssm: true},
+              {family: ($project + "-probe-" + $environment), component: "probe", protect_ssm: false},
+              {family: ($project + "-db-seeder-" + $environment), component: "database-seeder", protect_ssm: false}
+            ]')
+        fi
+
+        declare -A PROTECTED_TASK_DEFINITIONS=()
+        DEREGISTER_COUNT=0
+        DELETE_COUNT=0
+
+        # ----- helper functions ------------------------------------------------
+        protect_task_definition() {
+          local candidate="$1"
+          local reason="${2:-unspecified}"
+          if [ -n "$candidate" ] && [ "$candidate" != "null" ] && [ "$candidate" != "None" ]; then
+            if [ -z "${PROTECTED_TASK_DEFINITIONS[$candidate]:-}" ]; then
+              PROTECTED_TASK_DEFINITIONS["$candidate"]=1
+              echo "  [protect] $candidate (reason: $reason)"
+            fi
+          fi
+        }
+
+        maybe_run() {
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "[dry-run] $*"
+          else
+            "$@"
+          fi
+        }
+
+        get_ssm_arn() {
+          local parameter_name="$1"
+          aws ssm get-parameter \
+            --name "$parameter_name" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || true
+        }
+
+        # ----- per-family protection and cleanup loop -------------------------
+        while IFS= read -r family_entry; do
+          [ -z "$family_entry" ] && continue
+
+          FAMILY=$(jq -r '.family' <<< "$family_entry")
+          COMPONENT=$(jq -r '.component // ""' <<< "$family_entry")
+          PROTECT_SSM=$(jq -r '.protect_ssm // false' <<< "$family_entry")
+
+          echo "Processing family: $FAMILY"
+
+          # ----- protect trusted SSM pointers --------------------------------
+          if [ "$PROTECT_SSM" = "true" ] && [ -n "$COMPONENT" ]; then
+            PARAMETER_PREFIX="/${PROJECT}/${ENVIRONMENT}/${COMPONENT}"
+
+            CURRENT_TASK_DEFINITION_ARN=$(get_ssm_arn "${PARAMETER_PREFIX}/current-task-definition-arn")
+            LAST_KNOWN_GOOD_TASK_DEFINITION_ARN=$(get_ssm_arn "${PARAMETER_PREFIX}/last-known-good-task-definition-arn")
+
+            protect_task_definition "$CURRENT_TASK_DEFINITION_ARN" "SSM current pointer"
+            protect_task_definition "$LAST_KNOWN_GOOD_TASK_DEFINITION_ARN" "SSM last-known-good pointer"
+          fi
+
+          # ----- protect recent successful manifest lineage -------------------
+          if [ -n "$COMPONENT" ]; then
+            INDEX_KEY="${PROJECT}/deployments/${ENVIRONMENT}/${COMPONENT}/manifest-index.json"
+            INDEX_FILE="$(mktemp_tracked)"
+
+            if aws s3 cp "s3://${BUCKET}/${INDEX_KEY}" "$INDEX_FILE" >/dev/null 2>&1; then
+              echo "  [manifest] Protecting up to ${RETAIN_SUCCESSFUL_LINEAGE_COUNT} recent successful lineage entries"
+              while IFS= read -r protected_from_history; do
+                protect_task_definition "$protected_from_history" "Manifest lineage"
+              done < <(
+                jq -r \
+                  --argjson retainCount "$RETAIN_SUCCESSFUL_LINEAGE_COUNT" '
+                    (.entries // [])
+                    | map(select(.status == "successful" or .status == "rolled_back"))
+                    | sort_by(.deployedAt // "")
+                    | reverse
+                    | .[:$retainCount]
+                    | .[]
+                    | [.taskDefinitionArn, .previousTaskDefinitionArn]
+                    | .[]
+                    | select(. != null and . != "")
+                  ' "$INDEX_FILE"
+              )
+            else
+              echo "  [manifest] No manifest index found at s3://${BUCKET}/${INDEX_KEY}; skipping manifest-based protection"
+            fi
+          fi
+
+          # ----- evaluate active revisions for deregistration -----------------
+          mapfile -t ACTIVE_ARNS < <(
+            aws ecs list-task-definitions \
+              --family-prefix "$FAMILY" \
+              --status ACTIVE \
+              --sort DESC \
+              --query 'taskDefinitionArns' \
+              --output text | tr '\t' '\n' | sed '/^$/d' | grep -v '^None$' || true
+          )
+
+          if [ "${#ACTIVE_ARNS[@]}" -gt 0 ]; then
+            for i in "${!ACTIVE_ARNS[@]}"; do
+              ARN="${ACTIVE_ARNS[$i]}"
+
+              if [ "$i" -lt "$KEEP_LATEST_ACTIVE_COUNT" ]; then
+                # Always preserve the freshest ACTIVE revisions so a dry run can be tightened
+                # gradually without stripping the immediate operational rollback headroom.
+                protect_task_definition "$ARN" "Recent active headroom"
+                continue
+              fi
+
+              if [ -n "${PROTECTED_TASK_DEFINITIONS[$ARN]:-}" ]; then
+                continue
+              fi
+
+              DEREGISTER_COUNT=$((DEREGISTER_COUNT + 1))
+              echo "Deregistering stale ACTIVE revision: $ARN"
+              maybe_run aws ecs deregister-task-definition --task-definition "$ARN"
+            done
+          fi
+
+          # ----- evaluate inactive revisions for batched deletion -------------
+          DELETE_BATCH=()
+          mapfile -t INACTIVE_ARNS < <(
+            aws ecs list-task-definitions \
+              --family-prefix "$FAMILY" \
+              --status INACTIVE \
+              --sort DESC \
+              --query 'taskDefinitionArns' \
+              --output text | tr '\t' '\n' | sed '/^$/d' | grep -v '^None$' || true
+          )
+
+          if [ "${#INACTIVE_ARNS[@]}" -gt 0 ]; then
+            for ARN in "${INACTIVE_ARNS[@]}"; do
+              if [ -n "${PROTECTED_TASK_DEFINITIONS[$ARN]:-}" ]; then
+                continue
+              fi
+
+              DELETE_BATCH+=("$ARN")
+            done
+
+            for (( batch_start=0; batch_start<${#DELETE_BATCH[@]}; batch_start+=10 )); do
+              BATCH=("${DELETE_BATCH[@]:batch_start:10}")
+              [ "${#BATCH[@]}" -eq 0 ] && continue
+
+              echo "Deleting stale INACTIVE batch (${#BATCH[@]} revisions): ${BATCH[*]}"
+              maybe_run aws ecs delete-task-definitions --task-definitions "${BATCH[@]}"
+              DELETE_COUNT=$((DELETE_COUNT + ${#BATCH[@]}))
+            done
+          fi
+
+          echo
+        done < <(jq -c '.[]' <<< "$FAMILIES_JSON")
+
+        # ----- summary --------------------------------------------------------
+        echo "Cleanup summary:"
+        echo "  Protected task definitions : ${#PROTECTED_TASK_DEFINITIONS[@]}"
+        echo "  ACTIVE revisions targeted  : $DEREGISTER_COUNT"
+        echo "  INACTIVE revisions targeted: $DELETE_COUNT"
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "  Mode                       : dry-run"
+        else
+          echo "  Mode                       : live"
+        fi
+
+        {
+          echo "deregister_count=$DEREGISTER_COUNT"
+          echo "delete_count=$DELETE_COUNT"
+          echo "protected_count=${#PROTECTED_TASK_DEFINITIONS[@]}"
+        } >> "$GITHUB_OUTPUT"

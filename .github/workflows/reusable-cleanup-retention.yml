@@ -1,0 +1,87 @@
+name: Reusable Cleanup Retention
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment name used for vars and deployment targeting.
+        required: true
+        type: string
+      project_name:
+        description: Project name prefix used in ECS, S3, and SSM naming.
+        required: true
+        type: string
+      keep_latest_active_count:
+        description: Number of newest ACTIVE task definition revisions to keep per family.
+        required: false
+        type: string
+        default: "2"
+      retain_successful_lineage_count:
+        description: Number of recent successful manifest entries to protect per component.
+        required: false
+        type: string
+        default: "10"
+      dry_run:
+        description: Whether cleanup should only preview changes.
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      deregister_count:
+        description: Number of ACTIVE task definition revisions selected for deregistration.
+        value: ${{ jobs.cleanup-retention.outputs.deregister_count }}
+      delete_count:
+        description: Number of INACTIVE task definition revisions selected for deletion.
+        value: ${{ jobs.cleanup-retention.outputs.delete_count }}
+      protected_count:
+        description: Number of protected task definition revisions discovered.
+        value: ${{ jobs.cleanup-retention.outputs.protected_count }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  cleanup-retention:
+    name: Cleanup Retention (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      deregister_count: ${{ steps.cleanup.outputs.deregister_count }}
+      delete_count: ${{ steps.cleanup.outputs.delete_count }}
+      protected_count: ${{ steps.cleanup.outputs.protected_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.ACCOUNT_ID }}:role/GitHubActions-ECS-DeployRole
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Prune stale ECS task definitions
+        id: cleanup
+        uses: ./.github/actions/ecs-prune-task-definitions
+        with:
+          project: ${{ inputs.project_name }}
+          environment: ${{ inputs.environment }}
+          bucket: ${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}
+          keep_latest_active_count: ${{ inputs.keep_latest_active_count }}
+          retain_successful_lineage_count: ${{ inputs.retain_successful_lineage_count }}
+          dry_run: ${{ inputs.dry_run }}
+
+      - name: Summarize cleanup run
+        shell: bash
+        run: |
+          # ----- cleanup summary render -------------------------------------
+          {
+            echo "## ECS Task Definition Cleanup"
+            echo "- Environment: \`${{ inputs.environment }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            echo "- Keep latest ACTIVE revisions: \`${{ inputs.keep_latest_active_count }}\`"
+            echo "- Protected successful lineage depth: \`${{ inputs.retain_successful_lineage_count }}\`"
+            echo "- Protected task definitions discovered: \`${{ steps.cleanup.outputs.protected_count }}\`"
+            echo "- ACTIVE revisions selected for deregistration: \`${{ steps.cleanup.outputs.deregister_count }}\`"
+            echo "- INACTIVE revisions selected for deletion: \`${{ steps.cleanup.outputs.delete_count }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

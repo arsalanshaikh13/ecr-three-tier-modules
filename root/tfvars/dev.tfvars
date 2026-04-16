@@ -2,9 +2,9 @@
 # Dev Environment Variables
 ##############################################
 
-region       = "us-east-1"
-environment  = "dev"
-project_name = "lirw-ecs"
+region                       = "us-east-1"
+environment                  = "dev"
+project_name                 = "lirw-ecs"
 notification_email_addresses = ["maleka.ssk19@gmail.com"]
 
 # CloudWatch release-health alarm tuning. These values mirror the shared-module defaults so
@@ -14,6 +14,15 @@ frontend_latency_threshold_seconds = 2
 backend_latency_threshold_seconds  = 2
 service_cpu_threshold              = 80
 service_memory_threshold           = 80
+
+# Phase 6 retention tuning keeps dev leaner than prod while preserving enough recent
+# history for rollback and debugging.
+ecr_image_retention_count                  = 15
+successful_manifest_retention_days         = 30
+noisy_manifest_retention_days              = 7
+noncurrent_manifest_version_retention_days = 14
+app_log_retention_days                     = 14
+ecs_exec_log_retention_days                = 7
 
 # Networking
 vpc_id          = "vpc-id"
@@ -76,19 +85,19 @@ ecs_network_mode_backend  = "awsvpc"
 # 256 CPU units = 0.25 vCPU
 # 512 MiB       = 0.5 GB
 # Smallest valid Fargate size
-backend_cpu            = 1024 # 0.5 vCPU
-backend_memory         = 2048 # 1 GB
-frontend_cpu           = 512  # 0.5 vCPU
-frontend_memory        = 1024 # 1 GB
-probe_cpu           = 256  # 0.5 vCPU
-probe_memory        = 512 # 1 GB
+backend_cpu     = 1024 # 0.5 vCPU
+backend_memory  = 2048 # 1 GB
+frontend_cpu    = 512  # 0.5 vCPU
+frontend_memory = 1024 # 1 GB
+probe_cpu       = 256  # 0.5 vCPU
+probe_memory    = 512  # 1 GB
 
 frontend_desired_count = 1 # or 2
 backend_desired_count  = 1 # or 2
 
 frontend_image = "nginx:alpine"
 backend_image  = "node:20-alpine"
-probe_image = "alpine:3.20"
+probe_image    = "alpine:3.20"
 
 db_image  = "alpine/mysql:seeder-latest"
 db_cpu    = 1024

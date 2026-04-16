@@ -49,6 +49,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- wait for final ECS task state --------------------------------
         # This wait is generic across probe-like and batch-like jobs: the caller starts the task,
         # and this action owns the common "block until ECS has a final state" behavior.
         aws ecs wait tasks-stopped \
@@ -61,6 +62,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- task result metadata -----------------------------------------
         EXIT_CODE=$(aws ecs describe-tasks \
           --cluster "${{ inputs.cluster }}" \
           --tasks "${{ inputs.task_arn }}" \
@@ -85,6 +87,7 @@ runs:
         echo "Task stopped reason: $STOPPED_REASON"
         echo "Container reason: $CONTAINER_REASON"
 
+        # ----- optional CloudWatch log fetch --------------------------------
         if [ "${{ inputs.fetch_logs }}" = "true" ] && [ -n "${{ inputs.task_definition }}" ]; then
           CONTAINER_NAME=$(aws ecs describe-tasks \
             --cluster "${{ inputs.cluster }}" \
@@ -124,6 +127,7 @@ runs:
           echo "Task log fetching was skipped." > "$LOG_FILE"
         fi
 
+        # ----- action outputs ------------------------------------------------
         RESULT_REASON="Task exit code: $EXIT_CODE | Task stopped reason: $STOPPED_REASON | Container reason: $CONTAINER_REASON"
 
         echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -136,6 +140,7 @@ runs:
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
 
+        # ----- failure contract ---------------------------------------------
         if [ "${{ inputs.fail_on_nonzero_exit }}" = "true" ] && [ "$EXIT_CODE" != "0" ]; then
           exit 1
         fi

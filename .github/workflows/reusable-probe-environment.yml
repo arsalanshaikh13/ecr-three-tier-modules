@@ -124,6 +124,7 @@ jobs:
         id: probe-config
         shell: bash
         run: |
+          # ----- probe purpose dispatch -------------------------------------
           # Keep one probe workflow reusable for both normal deployment validation and
           # post-rollback recovery verification. The purpose only changes reporting and
           # manifest paths; the underlying health check stays the same.
@@ -145,6 +146,7 @@ jobs:
         id: probe-execution
         shell: bash
         run: |
+          # ----- input normalization ----------------------------------------
           # Probe execution settings are resolved inside the reusable workflow's
           # environment-bound job so dev/prod can diverge safely without the caller
           # accidentally resolving the wrong environment-scoped values too early.
@@ -154,6 +156,7 @@ jobs:
           SUBNET_TAG_VALUES="${{ inputs.probe_subnet_tag_values }}"
           ASSIGN_PUBLIC_IP="${{ inputs.probe_assign_public_ip }}"
 
+          # ----- network mode and launch type fallback ----------------------
           if [ -z "$NETWORK_MODE" ]; then
             NETWORK_MODE="${{ vars.PROBE_NETWORK_MODE || 'awsvpc' }}"
           fi
@@ -166,6 +169,7 @@ jobs:
             fi
           fi
 
+          # ----- environment-specific network defaults ----------------------
           if [ -z "$SECURITY_GROUP_NAME" ]; then
             SECURITY_GROUP_NAME="${{ vars.PROBE_SECURITY_GROUP_NAME || format('ecs-node-frontend-sg-{0}', vars.ENV_VAR) }}"
           fi
@@ -178,6 +182,7 @@ jobs:
             ASSIGN_PUBLIC_IP="${{ vars.PROBE_ASSIGN_PUBLIC_IP || 'ENABLED' }}"
           fi
 
+          # ----- action outputs ----------------------------------------------
           echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
           echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
           echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
@@ -237,6 +242,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ----- success manifest workspace ---------------------------------
           mkdir -p manifests/success
           SUMMARY_FILE="manifests/success/${{ steps.probe-config.outputs.summary_slug }}-summary-${{ inputs.environment }}.md"
           touch "$SUMMARY_FILE"
@@ -278,11 +284,13 @@ jobs:
         if: ${{ success() }}
         shell: bash
         run: |
+          # ----- summary file replay ----------------------------------------
           # Job summaries are a lighter-weight place to iterate on deployment reporting:
           # they stay attached to the workflow run without adding PR noise while the
           # rollout, probe, and rollback flow is still being refined.
           cat "${{ steps.success-manifests.outputs.summary_file }}" >> "$GITHUB_STEP_SUMMARY"
 
+          # ----- contextual deployment summary ------------------------------
           {
             echo "## ${{ steps.probe-config.outputs.summary_heading }} Context"
             echo "- Workflow: \`${{ github.workflow }}\`"
@@ -327,6 +335,7 @@ jobs:
         id: probe-contract
         shell: bash
         run: |
+          # ----- probe status contract --------------------------------------
           if [ "${{ job.status }}" = "success" ]; then
             echo "probe_status=successful" >> "$GITHUB_OUTPUT"
             echo "manifest_artifact_name=${{ steps.probe-config.outputs.success_artifact_name }}" >> "$GITHUB_OUTPUT"
@@ -335,4 +344,5 @@ jobs:
             echo "manifest_artifact_name=${{ steps.probe-config.outputs.failure_artifact_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+          # ----- probe reason output ----------------------------------------
           echo "probe_reason=${{ steps.probe-result.outputs.result_reason }}" >> "$GITHUB_OUTPUT"

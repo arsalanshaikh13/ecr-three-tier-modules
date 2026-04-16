@@ -111,6 +111,7 @@ jobs:
         id: seeder-execution
         shell: bash
         run: |
+          # ----- input normalization ----------------------------------------
           # Temporary fallback: when awsvpc seeding inputs are omitted, keep the workflow
           # runnable by filling in the same style of environment-specific defaults used by probe.
           NETWORK_MODE="${{ inputs.seeder_network_mode }}"
@@ -119,6 +120,7 @@ jobs:
           SUBNET_TAG_VALUES="${{ inputs.seeder_subnet_tag_values }}"
           ASSIGN_PUBLIC_IP="${{ inputs.seeder_assign_public_ip }}"
 
+          # ----- network mode and launch type fallback ----------------------
           if [ -z "$NETWORK_MODE" ]; then
             NETWORK_MODE="${{ vars.SEEDER_NETWORK_MODE || 'non-awsvpc' }}"
           fi
@@ -131,6 +133,7 @@ jobs:
             fi
           fi
 
+          # ----- environment-specific network defaults ----------------------
           if [ -z "$SECURITY_GROUP_NAME" ]; then
             SECURITY_GROUP_NAME="${{ vars.SEEDER_SECURITY_GROUP_NAME || format('ecs-node-backend-sg-{0}', vars.ENV_VAR) }}"
           fi
@@ -143,6 +146,7 @@ jobs:
             ASSIGN_PUBLIC_IP="${{ vars.SEEDER_ASSIGN_PUBLIC_IP || 'DISABLED' }}"
           fi
 
+          # ----- action outputs ----------------------------------------------
           echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
           echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
           echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
@@ -192,12 +196,14 @@ jobs:
         id: seeding-timestamp
         shell: bash
         run: |
+          # ----- timestamp capture ------------------------------------------
           echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
 
       - name: Report seeding success
         if: ${{ steps.seeder-result.outputs.exit_code == '0' }}
         shell: bash
         run: |
+          # ----- success reporting ------------------------------------------
           echo "Database seeding completed successfully."
           echo "Seeder reason: ${{ steps.seeder-result.outputs.result_reason }}"
 
@@ -260,6 +266,7 @@ jobs:
         id: seeding-contract
         shell: bash
         run: |
+          # ----- seeding status contract ------------------------------------
           if [ "${{ steps.seeder-result.outputs.exit_code }}" = "0" ]; then
             echo "seeding_status=successful" >> "$GITHUB_OUTPUT"
           else
@@ -270,6 +277,7 @@ jobs:
         if: ${{ steps.seeder-result.outputs.exit_code != '0' }}
         shell: bash
         run: |
+          # ----- non-zero exit guard ----------------------------------------
           echo "Database seeding FAILED."
           echo "Seeder reason: ${{ steps.seeder-result.outputs.result_reason }}"
           exit 1

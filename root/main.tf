@@ -52,16 +52,16 @@ module "sg" {
   # version = "0.1.4-sg-host-tag" # making host network specific change
   # version = "0.0.3-bridge" # making bridge network specific change
   # version = "0.0.4-host" # making host network specific change
-  backend_alb_port  = var.backend_alb_port
-  backend_tg_port   = var.backend_tg_port
+  backend_alb_port              = var.backend_alb_port
+  backend_tg_port               = var.backend_tg_port
   backend_service_network_mode  = var.ecs_network_mode_backend
-  common_tags       = local.common_tags
-  db_port           = var.db_port
-  env_suffix        = local.env_suffix
-  frontend_alb_port = var.frontend_alb_port
-  frontend_tg_port  = var.frontend_tg_port
+  common_tags                   = local.common_tags
+  db_port                       = var.db_port
+  env_suffix                    = local.env_suffix
+  frontend_alb_port             = var.frontend_alb_port
+  frontend_tg_port              = var.frontend_tg_port
   frontend_service_network_mode = var.ecs_network_mode_frontend
-  vpc_id            = module.vpc.vpc_id
+  vpc_id                        = module.vpc.vpc_id
 }
 
 
@@ -127,33 +127,46 @@ module "ssm" {
 }
 
 module "s3" {
+  # Keep Phase 6 retention work local-path based first so lifecycle changes can be
+  # exercised in this workspace before publishing a new shared module version.
   source       = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//s3"
-  version      = "0.0.15-s3-ssm-deploy"
-  common_tags  = local.common_tags
-  env_suffix   = local.env_suffix
-  project_name = var.project_name
+  version      = "0.1.15-s3-lifecycle"
+  # version      = "0.0.15-s3-ssm-deploy"
+  common_tags                                = local.common_tags
+  env_suffix                                 = local.env_suffix
+  project_name                               = var.project_name
+  successful_manifest_retention_days         = var.successful_manifest_retention_days
+  noisy_manifest_retention_days              = var.noisy_manifest_retention_days
+  noncurrent_manifest_version_retention_days = var.noncurrent_manifest_version_retention_days
 }
 
 
 module "cw_logs" {
+  # Keep Phase 6 retention work local-path based first so log-retention changes can be
+  # exercised in this workspace before publishing a new shared module version.
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//cw_logs"
-  version = "0.1.1-cw-logs-tag"
-  # version = "0.1.1"
-  app_cluster_name = "${var.project_name}-cluster-${local.env_suffix}"
-  common_tags      = local.common_tags
-  ecr_names        = local.ecr_names
-  env_suffix       = local.env_suffix
-  project_name     = var.project_name
+  version = "0.2.1-cw-logs-lifecycle"
+  # version = "0.1.1-cw-logs-tag"
+  app_cluster_name            = "${var.project_name}-cluster-${local.env_suffix}"
+  common_tags                 = local.common_tags
+  ecr_names                   = local.ecr_names
+  env_suffix                  = local.env_suffix
+  project_name                = var.project_name
+  app_log_retention_days      = var.app_log_retention_days
+  ecs_exec_log_retention_days = var.ecs_exec_log_retention_days
 }
 
 module "ecr" {
+  # Keep Phase 6 retention work local-path based first so ECR lifecycle changes can be
+  # exercised in this workspace before publishing a new shared module version.
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//ecr"
-  version = "0.2.12-ecr-name-tag"
-  # version = "0.0.12-ecr-name"
-  common_tags  = local.common_tags
-  ecr_names    = local.ecr_names
-  env_suffix   = local.env_suffix
-  project_name = var.project_name
+  version = "0.3.12-ecr-lifecycle"
+  # version = "0.2.12-ecr-name-tag"
+  common_tags               = local.common_tags
+  ecr_names                 = local.ecr_names
+  env_suffix                = local.env_suffix
+  project_name              = var.project_name
+  ecr_image_retention_count = var.ecr_image_retention_count
 }
 
 module "acm" {
@@ -222,7 +235,7 @@ module "lb" {
   # 1. Native Terraform registry path 
   source = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//lb"
 
-  version =   "0.4.6-three-tier-tg-type-combined" # also provides output for cw_alarms
+  version = "0.4.6-three-tier-tg-type-combined" # also provides output for cw_alarms
   # version = "0.3.6-three-tier-sub-ec2-nonawsvpc"
   # version = "0.3.6-three-tier-subnet-ec2-awsvpc"
   # version = "0.3.6-three-tier-subnet-fargate"
@@ -230,22 +243,22 @@ module "lb" {
   # version = "0.2.16-lb-tg-ip-private-subnet-tag"
   # version = "0.2.19-lb-public-subnet-tag"
   # version = "0.0.8-private-subnet"
-  backend_alb_port           = var.backend_alb_port
-  backend_alb_protocol       = var.backend_alb_protocol
-  backend_health_check_path  = var.backend_health_check_path
-  backend_lb_type            = var.backend_lb_type
-  backend_tg_port            = var.backend_tg_port
-  backend_tg_protocol        = var.backend_tg_protocol
+  backend_alb_port          = var.backend_alb_port
+  backend_alb_protocol      = var.backend_alb_protocol
+  backend_health_check_path = var.backend_health_check_path
+  backend_lb_type           = var.backend_lb_type
+  backend_tg_port           = var.backend_tg_port
+  backend_tg_protocol       = var.backend_tg_protocol
   # Reuse the existing tfvars-driven ECS network-mode inputs so the LB module can infer
   # instance vs ip target registration without adding yet another parallel root variable.
   backend_service_network_mode  = var.ecs_network_mode_backend
-  frontend_alb_port          = var.frontend_alb_port
-  frontend_alb_protocol      = var.frontend_alb_protocol
-  frontend_health_check_path = var.frontend_health_check_path
-  frontend_lb_type           = var.frontend_lb_type
+  frontend_alb_port             = var.frontend_alb_port
+  frontend_alb_protocol         = var.frontend_alb_protocol
+  frontend_health_check_path    = var.frontend_health_check_path
+  frontend_lb_type              = var.frontend_lb_type
   frontend_service_network_mode = var.ecs_network_mode_frontend
-  frontend_tg_port           = var.frontend_tg_port
-  frontend_tg_protocol       = var.frontend_tg_protocol
+  frontend_tg_port              = var.frontend_tg_port
+  frontend_tg_protocol          = var.frontend_tg_protocol
 
   env_suffix                    = local.env_suffix
   app_cert_wait_certificate_arn = module.acm.app_cert_wait_certificate_arn
@@ -340,16 +353,16 @@ module "cw_alarms" {
   # 1. naming/tag context from the root module
   # 2. ECS service dimensions for CPU and memory alarms
   # 3. ALB / target-group ARN suffixes for request-error and latency alarms
-  common_tags  = local.common_tags
-  project_name = var.project_name
-  env_suffix   = local.env_suffix
-  alb_5xx_threshold                   = var.alb_5xx_threshold
-  frontend_latency_threshold_seconds  = var.frontend_latency_threshold_seconds
-  backend_latency_threshold_seconds   = var.backend_latency_threshold_seconds
-  service_cpu_threshold               = var.service_cpu_threshold
-  service_memory_threshold            = var.service_memory_threshold
+  common_tags                        = local.common_tags
+  project_name                       = var.project_name
+  env_suffix                         = local.env_suffix
+  alb_5xx_threshold                  = var.alb_5xx_threshold
+  frontend_latency_threshold_seconds = var.frontend_latency_threshold_seconds
+  backend_latency_threshold_seconds  = var.backend_latency_threshold_seconds
+  service_cpu_threshold              = var.service_cpu_threshold
+  service_memory_threshold           = var.service_memory_threshold
 
-  cluster_name           = "${var.project_name}-cluster-${local.env_suffix}"
+  cluster_name          = "${var.project_name}-cluster-${local.env_suffix}"
   frontend_service_name = module.ecs_fargate.frontend_service_name
   backend_service_name  = module.ecs_fargate.backend_service_name
   # frontend_service_name = module.ecs_ec2.frontend_service_name
@@ -364,8 +377,8 @@ module "cw_alarms" {
   # Use the same SNS topic as release notifications for now so runtime alarms reach the
   # same operator inbox. If alert volume grows later, this can be split into a dedicated
   # operations topic without changing individual alarm resources again.
-  alarm_action_arns = [module.sns_notifications.release_notifications_topic_arn]
-  ok_action_arns    = [module.sns_notifications.release_notifications_topic_arn]
+  alarm_action_arns = [module.sns.release_notifications_topic_arn]
+  ok_action_arns    = [module.sns.release_notifications_topic_arn]
 }
 
 module "sns" {
@@ -376,10 +389,10 @@ module "sns" {
   version = "0.0.23-sns-notifications"
 
 
-  common_tags              = local.common_tags
-  project_name             = var.project_name
-  env_suffix               = local.env_suffix
-  email_endpoints          = var.notification_email_addresses
+  common_tags     = local.common_tags
+  project_name    = var.project_name
+  env_suffix      = local.env_suffix
+  email_endpoints = var.notification_email_addresses
 }
 
 

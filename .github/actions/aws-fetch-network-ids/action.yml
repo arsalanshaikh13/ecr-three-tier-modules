@@ -25,22 +25,26 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- security group resolution ------------------------------------
         # Resolve the security group once so callers do not repeat the same CLI block in every job.
         SG_ID=$(aws ec2 describe-security-groups \
           --filters "Name=group-name,Values=${{ inputs.security_group_name }}" \
           --query "SecurityGroups[0].GroupId" \
           --output text)
 
+        # ----- subnet resolution --------------------------------------------
         # Keep subnets in JSON form because ECS awsvpc network-configuration expects an array-like value.
         SUBNETS=$(aws ec2 describe-subnets \
           --filters "Name=tag:Name,Values=${{ inputs.subnet_tag_values }}" \
           --query 'Subnets[*].SubnetId' \
           --output json | tr -d '\n' | tr -d ' ')
 
+        # ----- validation ----------------------------------------------------
         if [ "$SG_ID" = "None" ] || [ -z "$SUBNETS" ]; then
           echo "Error: Could not find the requested security group or subnets."
           exit 1
         fi
 
+        # ----- action outputs ------------------------------------------------
         echo "security_group_id=$SG_ID" >> "$GITHUB_OUTPUT"
         echo "subnet_ids_json=$SUBNETS" >> "$GITHUB_OUTPUT"

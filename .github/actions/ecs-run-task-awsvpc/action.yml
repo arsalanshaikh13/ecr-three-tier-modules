@@ -79,6 +79,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- input normalization ------------------------------------------
         # Callers can either pass concrete IDs directly or let this action resolve them from
         # the awsvpc-specific lookup inputs. Keeping both paths makes the action reusable across
         # tightly controlled workflows and more generic callers.
@@ -86,6 +87,7 @@ runs:
         SECURITY_GROUP_ID="${{ inputs.security_group_id }}"
         ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
+        # ----- network lookup fallback --------------------------------------
         if [ -z "$SUBNET_IDS_JSON" ]; then
           # preserve array of string using literal quotes ''
           SUBNET_IDS_JSON='${{ steps.lookup-network.outputs.subnet_ids_json }}'
@@ -95,6 +97,7 @@ runs:
           SECURITY_GROUP_ID="${{ steps.lookup-network.outputs.security_group_id }}"
         fi
 
+        # ----- action outputs ------------------------------------------------
         echo "subnet_ids_json=$SUBNET_IDS_JSON" >> "$GITHUB_OUTPUT"
         echo "security_group_id=$SECURITY_GROUP_ID" >> "$GITHUB_OUTPUT"
         echo "assign_public_ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
@@ -104,6 +107,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- region resolution --------------------------------------------
         # Prefer an explicit caller-provided region so reusable workflows can make their
         # region intent visible at the call site, while still preserving env-based fallback.
         AWS_REGION_RESOLVED="${{ inputs.aws_region }}"
@@ -114,8 +118,10 @@ runs:
           exit 1
         fi
 
+        # ----- run mode dispatch --------------------------------------------
         case "${{ inputs.run_mode }}" in
           service)
+            # ----- service mode update --------------------------------------
             # In service mode, awsvpc services may still need their network configuration updated
             # alongside the task definition. Keep the network block optional so callers can either
             # swap only the revision or also restate the awsvpc settings explicitly.
@@ -149,6 +155,7 @@ runs:
             ;;
 
           task)
+            # ----- one-off task mode ---------------------------------------
             # Use task mode when the task definition expects awsvpc networking, such as the probe
             # task that runs in private subnets with its own ENI.
             if [ -z "${{ steps.resolve-network.outputs.subnet_ids_json }}" ] || [ -z "${{ steps.resolve-network.outputs.security_group_id }}" ]; then
@@ -177,6 +184,7 @@ runs:
             ;;
 
           *)
+            # ----- unsupported mode guard -----------------------------------
             echo "Error: unsupported run_mode '${{ inputs.run_mode }}'. Expected 'task' or 'service'."
             exit 1
             ;;

@@ -61,11 +61,13 @@ runs:
         set -euo pipefail
         shopt -s nullglob
 
+        # ----- batch setup ----------------------------------------------------
         mkdir -p "${{ inputs.manifest_dir }}"
 
         # Batch manifest generation keeps the environment-level probe job intact while still
         # moving the repetitive manifest persistence logic into a reusable action.
         for METADATA_FILE in ${{ inputs.metadata_glob }}; do
+          # ----- metadata extraction ------------------------------------------
           COMPONENT=$(jq -r '.component' "$METADATA_FILE")
           CLUSTER=$(jq -r '.cluster' "$METADATA_FILE")
           SERVICE=$(jq -r '.service' "$METADATA_FILE")
@@ -84,6 +86,14 @@ runs:
           MANIFEST_FILE="${{ inputs.manifest_dir }}/${COMPONENT}-${{ inputs.environment }}-${{ inputs.status }}-${GITHUB_RUN_ID}.json"
           MANIFEST_S3_KEY="${{ inputs.bucket_prefix_root }}/${COMPONENT}/${{ inputs.status }}/$(basename "$MANIFEST_FILE")"
 
+          # ----- retention class resolution -----------------------------------
+          if [ "${{ inputs.status }}" = "successful" ] || [ "${{ inputs.status }}" = "rolled_back" ]; then
+            MANIFEST_CLASS="durable"
+          else
+            MANIFEST_CLASS="noisy"
+          fi
+
+          # ----- manifest document rendering ----------------------------------
           jq -n \
             --arg project "${{ inputs.project }}" \
             --arg environment "${{ inputs.environment }}" \
@@ -138,8 +148,13 @@ runs:
               reason: $reason
             }' > "$MANIFEST_FILE"
 
-          aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY"
+          # ----- manifest upload ----------------------------------------------
+          # Tag manifest objects by retention class so S3 lifecycle can keep rollback-relevant
+          # history longer than failure noise without relying on brittle key parsing rules.
+          aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY" \
+            --tagging "manifest_class=${MANIFEST_CLASS}&manifest_status=${{ inputs.status }}"
 
+          # ----- manifest index refresh ---------------------------------------
           INDEX_KEY="${{ inputs.project }}/deployments/${{ inputs.environment }}/${COMPONENT}/manifest-index.json"
           INDEX_FILE="$(mktemp)"
 
@@ -190,6 +205,7 @@ runs:
 
           aws s3 cp "$UPDATED_INDEX_FILE" "s3://${{ inputs.bucket }}/$INDEX_KEY"
 
+          # ----- optional summary append --------------------------------------
           if [ -n "${{ inputs.summary_file }}" ]; then
             {
               echo "### ${COMPONENT} deployment ${{ inputs.status }} in ${{ inputs.environment }}"

@@ -69,6 +69,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ----- observation window resolution -------------------------------
           # Smoke tests answer "did the revision start?" while this wait/gate answers
           # "did the revision stay healthy under observation long enough to trust it?"
           WINDOW_MINUTES="${{ inputs.observation_window_minutes }}"
@@ -87,8 +88,10 @@ jobs:
         id: telemetry-metadata
         shell: bash
         run: |
+          # ----- deployment metadata file -----------------------------------
           METADATA_FILE="deploy-metadata/deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json"
 
+          # ----- metadata outputs -------------------------------------------
           echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
           echo "service=$(jq -r '.service' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
           echo "task_definition_arn=$(jq -r '.newTaskDefinitionArn // .new_task_definition_arn' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
@@ -113,6 +116,7 @@ jobs:
         id: telemetry-timestamp
         shell: bash
         run: |
+          # ----- timestamp capture ------------------------------------------
           echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
 
       - name: Persist telemetry manifest
@@ -157,6 +161,7 @@ jobs:
       - name: Publish telemetry summary
         shell: bash
         run: |
+          # ----- job summary render -----------------------------------------
           {
             echo "## Release Telemetry Evaluation"
             echo "- Purpose: \`${{ inputs.health_purpose }}\`"
@@ -172,6 +177,7 @@ jobs:
         id: telemetry-contract
         shell: bash
         run: |
+          # ----- workflow outputs -------------------------------------------
           echo "telemetry_status=${{ steps.evaluate-alarms.outputs.evaluation_status }}" >> "$GITHUB_OUTPUT"
           {
             echo "telemetry_reason<<EOF"
@@ -183,5 +189,6 @@ jobs:
         if: ${{ steps.evaluate-alarms.outputs.evaluation_status == 'failed' }}
         shell: bash
         run: |
+          # ----- unhealthy release guard ------------------------------------
           echo "Telemetry gate failed: ${{ steps.evaluate-alarms.outputs.alarm_state_summary }}"
           exit 1

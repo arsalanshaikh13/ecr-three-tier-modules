@@ -24,13 +24,16 @@ runs:
         set -euo pipefail
         shopt -s nullglob
 
+        # ----- batch pointer update loop -------------------------------------
         # Probe runs once per environment, so we batch pointer writes here instead of
         # splitting the workflow into separate per-component success jobs.
         for METADATA_FILE in ${{ inputs.metadata_glob }}; do
+          # ----- metadata extraction ------------------------------------------
           COMPONENT=$(jq -r '.component' "$METADATA_FILE")
           TASK_DEFINITION_ARN=$(jq -r '.${{ inputs.task_definition_field }} // .new_task_definition_arn' "$METADATA_FILE")
           PARAMETER_PREFIX="/${{ inputs.project }}/${{ inputs.environment }}/${COMPONENT}"
 
+          # ----- trusted pointer writes --------------------------------------
           aws ssm put-parameter \
             --name "${PARAMETER_PREFIX}/current-task-definition-arn" \
             --type String \

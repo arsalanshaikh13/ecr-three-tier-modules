@@ -44,10 +44,12 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- input and lookup setup ----------------------------------------
         PARAMETER_PREFIX="/${{ inputs.project }}/${{ inputs.environment }}/${{ inputs.component }}"
         INDEX_KEY="${{ inputs.project }}/deployments/${{ inputs.environment }}/${{ inputs.component }}/manifest-index.json"
         ATTEMPTED_TASK_DEF_ARN="${{ inputs.attempted_task_definition_arn }}"
 
+        # ----- trusted SSM pointer reads -------------------------------------
         CURRENT_TASK_DEFINITION_ARN=$(aws ssm get-parameter \
           --name "${PARAMETER_PREFIX}/current-task-definition-arn" \
           --query 'Parameter.Value' \
@@ -66,6 +68,7 @@ runs:
           LAST_KNOWN_GOOD_TASK_DEFINITION_ARN=""
         fi
 
+        # ----- parent lineage resolution from manifest index ------------------
         PARENT_LAST_KNOWN_GOOD_TASK_DEFINITION_ARN=""
         if [ -n "$LAST_KNOWN_GOOD_TASK_DEFINITION_ARN" ]; then
           if aws s3 cp "s3://${{ inputs.bucket }}/$INDEX_KEY" manifest-index.json >/dev/null 2>&1; then
@@ -87,6 +90,7 @@ runs:
         TARGET_TASK_DEF_ARN="$LAST_KNOWN_GOOD_TASK_DEFINITION_ARN"
         TARGET_REASON="Rollback defaulted to the trusted SSM last-known-good pointer."
 
+        # ----- rollback target selection -------------------------------------
         # If the failing revision never became trusted, simply return the last-known-good
         # pointer. If the failing revision is itself the trusted current revision, step back
         # one more generation using the successful manifest history so rollback lands on the
@@ -100,6 +104,7 @@ runs:
           TARGET_REASON="Rollback fell back to the trusted SSM last-known-good pointer because no parent trusted revision was found in deployment manifest history."
         fi
 
+        # ----- action outputs -------------------------------------------------
         echo "current_task_definition_arn=$CURRENT_TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"
         echo "last_known_good_task_definition_arn=$LAST_KNOWN_GOOD_TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"
         echo "parent_last_known_good_task_definition_arn=$PARENT_LAST_KNOWN_GOOD_TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"

@@ -116,6 +116,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- local manifest path setup --------------------------------------
         mkdir -p "${{ inputs.manifest_dir }}"
 
         # Manifest history complements the SSM pointer model: SSM stores the trusted
@@ -123,6 +124,14 @@ runs:
         MANIFEST_FILE="${{ inputs.manifest_dir }}/${{ inputs.component }}-${{ inputs.environment }}-${{ inputs.status }}-${{ inputs.workflow_run_id }}.json"
         MANIFEST_S3_KEY="${{ inputs.bucket_prefix }}/$(basename "$MANIFEST_FILE")"
 
+        # ----- retention class resolution -------------------------------------
+        if [ "${{ inputs.status }}" = "successful" ] || [ "${{ inputs.status }}" = "rolled_back" ]; then
+          MANIFEST_CLASS="durable"
+        else
+          MANIFEST_CLASS="noisy"
+        fi
+
+        # ----- manifest document rendering ------------------------------------
         jq -n \
           --arg project "${{ inputs.project }}" \
           --arg environment "${{ inputs.environment }}" \
@@ -177,8 +186,13 @@ runs:
             reason: $reason
           }' > "$MANIFEST_FILE"
 
-        aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY"
+        # ----- manifest upload ------------------------------------------------
+        # Tag manifest objects by retention class so S3 lifecycle can keep rollback-relevant
+        # history longer than failure noise without relying on fragile filename parsing.
+        aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY" \
+          --tagging "manifest_class=${MANIFEST_CLASS}&manifest_status=${{ inputs.status }}"
 
+        # ----- manifest index refresh -----------------------------------------
         # Keep a lightweight per-component index in S3 so operators and rollback logic can
         # enumerate recent revisions without scraping individual manifest objects by hand.
         INDEX_KEY="${{ inputs.project }}/deployments/${{ inputs.environment }}/${{ inputs.component }}/manifest-index.json"
@@ -231,5 +245,6 @@ runs:
 
         aws s3 cp "$UPDATED_INDEX_FILE" "s3://${{ inputs.bucket }}/$INDEX_KEY"
 
+        # ----- action outputs -------------------------------------------------
         echo "manifest_file=$MANIFEST_FILE" >> "$GITHUB_OUTPUT"
         echo "manifest_s3_key=$MANIFEST_S3_KEY" >> "$GITHUB_OUTPUT"

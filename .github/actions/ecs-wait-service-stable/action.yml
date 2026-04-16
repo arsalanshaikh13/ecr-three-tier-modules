@@ -16,6 +16,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- wait for ECS service stability -------------------------------
         # Use this after probe success or rollback so ECS/ALB stability becomes the final
         # confirmation step rather than blocking the earlier smoke-test flow.
         aws ecs wait services-stable \

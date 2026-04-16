@@ -25,10 +25,12 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- parameter path resolution -------------------------------------
         # We only update these pointers when a revision is accepted as good
         # or when rollback succeeds. That keeps automatic rollback deterministic.
         PARAMETER_PREFIX="/${{ inputs.project }}/${{ inputs.environment }}/${{ inputs.component }}"
 
+        # ----- trusted pointer writes ----------------------------------------
         aws ssm put-parameter \
           --name "${PARAMETER_PREFIX}/current-task-definition-arn" \
           --type String \

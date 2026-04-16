@@ -1,0 +1,113 @@
+name: Cleanup Retention
+
+on:
+  # Scheduled runs stay dry-run by default so retention behavior can be reviewed safely
+  # in job summaries before anyone flips a manual run into live cleanup.
+  schedule:
+    - cron: "30 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Target environment to clean up.
+        type: choice
+        required: true
+        default: all
+        options:
+          - dev
+          - prod
+          - all
+      project_name:
+        description: Project name prefix used in ECS, S3, and SSM naming.
+        type: string
+        required: true
+        default: lirw-ecs
+      keep_latest_active_count:
+        description: Number of newest ACTIVE task definition revisions to keep per family.
+        type: string
+        required: true
+        default: "2"
+      retain_successful_lineage_count:
+        description: Number of recent successful manifest entries to protect per component.
+        type: string
+        required: true
+        default: "10"
+      dry_run:
+        description: Preview cleanup changes without deregistering or deleting task definitions.
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  set-matrix:
+    name: Resolve Cleanup Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      project_name: ${{ steps.matrix.outputs.project_name }}
+      keep_latest_active_count: ${{ steps.matrix.outputs.keep_latest_active_count }}
+      retain_successful_lineage_count: ${{ steps.matrix.outputs.retain_successful_lineage_count }}
+      dry_run: ${{ steps.matrix.outputs.dry_run }}
+    steps:
+      - id: matrix
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_ENVIRONMENT="${{ inputs.target_environment }}"
+            PROJECT_NAME="${{ inputs.project_name }}"
+            KEEP_LATEST_ACTIVE_COUNT="${{ inputs.keep_latest_active_count }}"
+            RETAIN_SUCCESSFUL_LINEAGE_COUNT="${{ inputs.retain_successful_lineage_count }}"
+            DRY_RUN="${{ inputs.dry_run }}"
+          else
+            TARGET_ENVIRONMENT="all"
+            PROJECT_NAME="lirw-ecs"
+            KEEP_LATEST_ACTIVE_COUNT="2"
+            RETAIN_SUCCESSFUL_LINEAGE_COUNT="10"
+            DRY_RUN="true"
+          fi
+
+          if [ "$TARGET_ENVIRONMENT" = "all" ]; then
+            MATRIX='["dev","prod"]'
+          else
+            MATRIX=$(jq -cn --arg env "$TARGET_ENVIRONMENT" '[$env]')
+          fi
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "project_name=$PROJECT_NAME" >> "$GITHUB_OUTPUT"
+          echo "keep_latest_active_count=$KEEP_LATEST_ACTIVE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "retain_successful_lineage_count=$RETAIN_SUCCESSFUL_LINEAGE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+  cleanup-retention-dry:
+    name: Cleanup Dry Run (${{ matrix.environment }})
+    needs: set-matrix
+    if: ${{ github.event_name == 'schedule' || needs.set-matrix.outputs.dry_run == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+    uses: ./.github/workflows/reusable-cleanup-retention.yml
+    with:
+      environment: ${{ matrix.environment }}
+      project_name: ${{ needs.set-matrix.outputs.project_name }}
+      keep_latest_active_count: ${{ needs.set-matrix.outputs.keep_latest_active_count }}
+      retain_successful_lineage_count: ${{ needs.set-matrix.outputs.retain_successful_lineage_count }}
+      dry_run: true
+
+  cleanup-retention-live:
+    name: Cleanup Live (${{ matrix.environment }})
+    needs: set-matrix
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.set-matrix.outputs.dry_run != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+    uses: ./.github/workflows/reusable-cleanup-retention.yml
+    with:
+      environment: ${{ matrix.environment }}
+      project_name: ${{ needs.set-matrix.outputs.project_name }}
+      keep_latest_active_count: ${{ needs.set-matrix.outputs.keep_latest_active_count }}
+      retain_successful_lineage_count: ${{ needs.set-matrix.outputs.retain_successful_lineage_count }}
+      dry_run: false

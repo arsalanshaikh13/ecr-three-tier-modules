@@ -97,8 +97,10 @@ jobs:
         id: rollback-metadata
         shell: bash
         run: |
+          # ----- deployment metadata file -----------------------------------
           METADATA_FILE="deploy-metadata/deploy-metadata-${{ inputs.component }}-${{ inputs.environment }}.json"
 
+          # ----- metadata outputs -------------------------------------------
           # Deployment metadata remains the shared contract between deploy, probe, and rollback:
           # it tells rollback which service was targeted and which revision failed.
           echo "cluster=$(jq -r '.cluster' "$METADATA_FILE")" >> "$GITHUB_OUTPUT"
@@ -118,6 +120,7 @@ jobs:
       - name: Validate rollback target exists
         shell: bash
         run: |
+          # ----- rollback target validation ---------------------------------
           if [ -z "${{ steps.rollback-target.outputs.rollback_target_task_definition_arn }}" ]; then
             echo "Error: No rollback target task definition ARN could be resolved for ${{ inputs.component }} (${{ inputs.environment }})."
             exit 1
@@ -127,6 +130,7 @@ jobs:
         id: rollback-execution
         shell: bash
         run: |
+          # ----- input normalization ----------------------------------------
           # Rollback should follow the same runtime shape as the service that was deployed.
           # Resolve the mode here inside the environment-bound job so dev/prod can differ safely.
           LAUNCH_TYPE="${{ inputs.service_launch_type }}"
@@ -135,6 +139,7 @@ jobs:
           SUBNET_TAG_VALUES="${{ inputs.subnet_tag_values }}"
           ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
+          # ----- launch type and network mode fallback -----------------------
           if [ -z "$LAUNCH_TYPE" ]; then
             LAUNCH_TYPE="${{ vars.SERVICE_LAUNCH_TYPE || 'EC2' }}"
           fi
@@ -147,6 +152,7 @@ jobs:
             fi
           fi
 
+          # ----- component-aware network defaults ----------------------------
           if [ -z "$SECURITY_GROUP_NAME" ]; then
             if [ "${{ inputs.component }}" = "frontend" ]; then
               SECURITY_GROUP_NAME="${{ vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
@@ -171,6 +177,7 @@ jobs:
             fi
           fi
 
+          # ----- action outputs ----------------------------------------------
           echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
           echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
           echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
@@ -209,6 +216,7 @@ jobs:
         id: rollback-timestamp
         shell: bash
         run: |
+          # ----- timestamp capture ------------------------------------------
           echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
 
       - name: Persist rollback state and manifest

@@ -82,6 +82,7 @@ runs:
       id: resolve-image
       shell: bash
       run: |
+        # ----- image resolution ---------------------------------------------
         IMAGE_URI="${{ steps.determine-image.outputs.image || steps.build-image.outputs.image }}"
 
         # Probe wants "fetch first, build only if missing", while deploy can still do
@@ -103,6 +104,7 @@ runs:
     - name: Log current task definition ARN
       shell: bash
       run: |
+        # ----- current task definition state --------------------------------
         # The shared download action returns both the JSON file for rendering and the previous
         # ARN for rollback/manifests, so every caller gets the same state contract for free.
         echo "Current task definition ARN: ${{ steps.current-task-def.outputs.task_definition_arn }}"
@@ -119,11 +121,13 @@ runs:
       id: register-task-def
       shell: bash
       run: |
+        # ----- task definition registration ---------------------------------
         NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
           --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
           --query 'taskDefinition.taskDefinitionArn' \
           --output text)
 
+        # ----- action outputs ------------------------------------------------
         # Every caller needs the newly registered ARN, but what they do next differs:
         # deploy updates a service, probe runs a one-off task, and seeding runs a batch task.
         echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"

@@ -99,6 +99,7 @@ jobs:
         id: current-service-state
         shell: bash
         run: |
+          # ----- current service task definition -----------------------------
           CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
             --cluster "${{ env.ECS_CLUSTER }}" \
             --services "${{ inputs.component }}-service" \
@@ -113,6 +114,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ----- explicit rollback target override ---------------------------
           # Resolution order mirrors standard production rollback practice:
           # explicit ARN > manifest history > trusted SSM pointer.
           if [ -n "${{ inputs.rollback_task_definition_arn }}" ]; then
@@ -121,6 +123,7 @@ jobs:
             exit 0
           fi
 
+          # ----- manifest-selected rollback target ---------------------------
           if [ -n "${{ inputs.rollback_manifest_s3_key }}" ]; then
             aws s3 cp "s3://${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}/${{ inputs.rollback_manifest_s3_key }}" rollback-manifest-source.json >/dev/null
             MANIFEST_TASK_DEF_ARN=$(jq -r '.taskDefinitionArn // .task_definition_arn' rollback-manifest-source.json)
@@ -152,6 +155,7 @@ jobs:
         id: manual-rollback-target
         shell: bash
         run: |
+          # ----- manual target resolution -----------------------------------
           TARGET_ARN="${{ steps.resolve-rollback.outputs.task_definition_arn }}"
           TARGET_REASON="${{ steps.resolve-rollback.outputs.reason }}"
 
@@ -165,6 +169,7 @@ jobs:
             exit 1
           fi
 
+          # ----- action outputs ----------------------------------------------
           echo "task_definition_arn=$TARGET_ARN" >> "$GITHUB_OUTPUT"
           echo "reason=$TARGET_REASON" >> "$GITHUB_OUTPUT"
 
@@ -172,6 +177,7 @@ jobs:
         id: rollback-execution
         shell: bash
         run: |
+          # ----- input normalization ----------------------------------------
           # Manual rollback should recover using the same runtime/network model that the
           # target service expects, not assume EC2/non-awsvpc by default.
           LAUNCH_TYPE="${{ inputs.service_launch_type }}"
@@ -180,6 +186,7 @@ jobs:
           SUBNET_TAG_VALUES="${{ inputs.subnet_tag_values }}"
           ASSIGN_PUBLIC_IP="${{ inputs.assign_public_ip }}"
 
+          # ----- launch type and network mode fallback -----------------------
           if [ -z "$LAUNCH_TYPE" ]; then
             LAUNCH_TYPE="${{ vars.SERVICE_LAUNCH_TYPE || 'EC2' }}"
           fi
@@ -192,6 +199,7 @@ jobs:
             fi
           fi
 
+          # ----- component-aware network defaults ----------------------------
           if [ -z "$SECURITY_GROUP_NAME" ]; then
             if [ "${{ inputs.component }}" = "frontend" ]; then
               SECURITY_GROUP_NAME="${{ vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME || vars.SERVICE_SECURITY_GROUP_NAME || '' }}"
@@ -216,6 +224,7 @@ jobs:
             fi
           fi
 
+          # ----- action outputs ----------------------------------------------
           echo "launch_type=$LAUNCH_TYPE" >> "$GITHUB_OUTPUT"
           echo "network_mode=$NETWORK_MODE" >> "$GITHUB_OUTPUT"
           echo "security_group_name=$SECURITY_GROUP_NAME" >> "$GITHUB_OUTPUT"
@@ -254,6 +263,7 @@ jobs:
         id: manual-rollback-timestamp
         shell: bash
         run: |
+          # ----- timestamp capture ------------------------------------------
           echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
 
       - name: Persist manual rollback manifest

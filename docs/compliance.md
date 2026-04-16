@@ -74,11 +74,11 @@ At the infrastructure and pipeline layer, that translates into:
 
 These are rough code-level readiness estimates, not certification percentages.
 
-| Framework | Repo-visible readiness | Short reading |
-| --- | --- | --- |
-| GDPR | Moderate | Good security baseline in several places, but encryption scope, retention governance, IAM scoping, and breach/evidence processes are incomplete. |
-| SOC 2 | Moderate | Stronger than average engineering hygiene, especially around environment gating and release traceability, but not yet audit-ready in least privilege, evidence collection, review enforcement, and operational policy coverage. |
-| HIPAA | Low to Moderate | Some good foundations exist, but current defaults are not strong enough for regulated ePHI workloads without tighter IAM, stronger encryption choices, safer deletion defaults, audit retention hardening, and organization-level controls. |
+| Framework | Repo-visible readiness | Short reading                                                                                                                                                                                                                               |
+| --------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GDPR      | Moderate               | Good security baseline in several places, but encryption scope, retention governance, IAM scoping, and breach/evidence processes are incomplete.                                                                                            |
+| SOC 2     | Moderate               | Stronger than average engineering hygiene, especially around environment gating and release traceability, but not yet audit-ready in least privilege, evidence collection, review enforcement, and operational policy coverage.             |
+| HIPAA     | Low to Moderate        | Some good foundations exist, but current defaults are not strong enough for regulated ePHI workloads without tighter IAM, stronger encryption choices, safer deletion defaults, audit retention hardening, and organization-level controls. |
 
 ## What the Current Repo Already Does Well
 
@@ -472,18 +472,18 @@ AWS and ops:
 
 ## Repo-Visible Compliance Match by Domain
 
-| Control domain | Current match | Notes |
-| --- | --- | --- |
-| Encryption at rest | Partial | Present in several places, but mostly AES256 defaults rather than stronger KMS-backed design. |
-| Encryption for logs and exec sessions | Partial to weak | App logs exist, but exec log encryption is disabled. |
-| Least privilege IAM | Partial | Role separation exists, but policy scope is broader than compliance-ready. |
-| Secrets handling | Partial | Good direction, but recovery, rotation, and write permissions need tightening. |
-| Change control | Partial | Strong workflow structure, but not fully mandatory or fully declarative. |
-| Audit logging and evidence | Partial | Good release evidence, incomplete account-level and immutable audit story. |
-| Backup and recovery | Weak to partial | Some release history exists, but destructive defaults and DB snapshot settings are too weak for regulated prod. |
-| Monitoring and incident detection | Partial to strong | Telemetry and SNS are good foundations. |
-| Data minimization and retention | Partial | Some retention exists, but compliance-tier retention policy is not yet complete. |
-| Network boundary protection | Partial | Reasonable segmentation, but public exposure needs more compensating controls. |
+| Control domain                        | Current match     | Notes                                                                                                           |
+| ------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| Encryption at rest                    | Partial           | Present in several places, but mostly AES256 defaults rather than stronger KMS-backed design.                   |
+| Encryption for logs and exec sessions | Partial to weak   | App logs exist, but exec log encryption is disabled.                                                            |
+| Least privilege IAM                   | Partial           | Role separation exists, but policy scope is broader than compliance-ready.                                      |
+| Secrets handling                      | Partial           | Good direction, but recovery, rotation, and write permissions need tightening.                                  |
+| Change control                        | Partial           | Strong workflow structure, but not fully mandatory or fully declarative.                                        |
+| Audit logging and evidence            | Partial           | Good release evidence, incomplete account-level and immutable audit story.                                      |
+| Backup and recovery                   | Weak to partial   | Some release history exists, but destructive defaults and DB snapshot settings are too weak for regulated prod. |
+| Monitoring and incident detection     | Partial to strong | Telemetry and SNS are good foundations.                                                                         |
+| Data minimization and retention       | Partial           | Some retention exists, but compliance-tier retention policy is not yet complete.                                |
+| Network boundary protection           | Partial           | Reasonable segmentation, but public exposure needs more compensating controls.                                  |
 
 ## Implementation Roadmap for the Current Workflow and Infrastructure
 
@@ -567,3 +567,47 @@ Official sources used as control anchors:
   - https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html
 - AICPA SOC resources:
   - https://www.aicpa-cima.com/soc
+
+Summary
+
+Created [compliance.md](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/ecr-three-tier-modules/docs/compliance.md).
+
+What’s in it:
+
+- GDPR, SOC 2, and HIPAA requirements relevant to DevOps, GitHub Actions, Terraform, and AWS
+- a repo-visible readiness assessment
+- clear segmentation by control area
+- current matches vs gaps
+- implementation guidance split by GitHub Actions, Terraform, and AWS
+- a prioritized roadmap
+
+Main repo findings called out in the doc:
+
+- strong foundations:
+  - OIDC-based AWS auth in workflows
+  - environment/prod approval boundaries
+  - immutable ECR images and scan-on-push
+  - manifest history, rollback traceability, telemetry, SNS notifications
+- important gaps:
+  - broad IAM scopes in [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/iam/main.tf)
+  - exec log encryption disabled in [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/ecs_fargate/main.tf) and [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/ecs_ec2/main.tf)
+  - destructive convenience flags in [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/s3/main.tf), [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/ecr/main.tf), [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/rds/main.tf), and [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/secrets/main.tf)
+  - public edge and open egress patterns in [main.tf](C:/Users/DELL/ArsVSCode/CS50p_project/project_aFinal/website/website2_0/animations/scroll/aws_three_tier_arch/three-tier-terragrunt/ecr/terraform-ecr/terraform_modules/tf-modules/ecr-three-tier-tf-modules/modules/sg/main.tf)
+
+References included in the doc:
+
+- EUR-Lex GDPR text
+- HHS HIPAA Security Rule overview
+- AICPA SOC resources
+
+Important framing in the doc:
+
+- this is a readiness mapping, not a legal certification
+- SOC 2 and HIPAA cannot be satisfied by repo code alone
+- several controls still require org/process configuration outside Terraform and workflow YAML
+
+Natural next steps:
+
+1. I can turn the “Phase A: High-Priority Hardening” section into actual Terraform/workflow patches.
+2. I can add a second doc mapping each recommendation to exact files and modules to change.
+3. I can produce a checklist version for implementation tracking.

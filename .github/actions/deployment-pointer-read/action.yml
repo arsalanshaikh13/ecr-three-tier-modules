@@ -28,10 +28,12 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- parameter path resolution -------------------------------------
         # Deployment pointers live in SSM because ECS stores the revision history,
         # while SSM gives the workflow a single trusted pointer for recovery.
         PARAMETER_PREFIX="/${{ inputs.project }}/${{ inputs.environment }}/${{ inputs.component }}"
 
+        # ----- trusted pointer reads -----------------------------------------
         CURRENT_TASK_DEFINITION_ARN=$(aws ssm get-parameter \
           --name "${PARAMETER_PREFIX}/current-task-definition-arn" \
           --query 'Parameter.Value' \
@@ -50,5 +52,6 @@ runs:
           LAST_KNOWN_GOOD_TASK_DEFINITION_ARN=""
         fi
 
+        # ----- action outputs -------------------------------------------------
         echo "current_task_definition_arn=$CURRENT_TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"
         echo "last_known_good_task_definition_arn=$LAST_KNOWN_GOOD_TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"

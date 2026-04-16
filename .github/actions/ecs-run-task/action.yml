@@ -43,6 +43,7 @@ runs:
       run: |
         set -euo pipefail
 
+        # ----- region resolution --------------------------------------------
         # Prefer an explicit caller-provided region so reusable workflows can make their
         # region intent visible at the call site, while still preserving env-based fallback.
         AWS_REGION_RESOLVED="${{ inputs.aws_region }}"
@@ -54,6 +55,7 @@ runs:
           exit 1
         fi
 
+        # ----- service mode update ------------------------------------------
         if [ "${{ inputs.run_mode }}" = "service" ]; then
           # Service updates do not need per-task network configuration here because the ECS
           # service already owns its networking and launch-type settings in AWS.
@@ -78,6 +80,7 @@ runs:
           exit 0
         fi
 
+        # ----- one-off task mode --------------------------------------------
         # Use task mode when the task definition does not expect awsvpc networking, such as
         # EC2 bridge/host mode jobs like the current DB seeder. No network configuration is passed.
         TASK_ARN=$(aws ecs run-task \
@@ -93,5 +96,6 @@ runs:
           exit 1
         fi
 
+        # ----- action outputs ------------------------------------------------
         echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
         echo "service=" >> "$GITHUB_OUTPUT"

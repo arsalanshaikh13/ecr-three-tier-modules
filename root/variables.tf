@@ -329,6 +329,36 @@ variable "service_memory_threshold" {
   type        = number
 }
 
+variable "ecr_image_retention_count" {
+  description = "Number of most recent images to retain in each application ECR repository."
+  type        = number
+}
+
+variable "successful_manifest_retention_days" {
+  description = "Retention period in days for successful and rollback-oriented deployment manifests."
+  type        = number
+}
+
+variable "noisy_manifest_retention_days" {
+  description = "Retention period in days for failed or otherwise noisy deployment manifests."
+  type        = number
+}
+
+variable "noncurrent_manifest_version_retention_days" {
+  description = "Retention period in days for noncurrent deployment-manifest object versions."
+  type        = number
+}
+
+variable "app_log_retention_days" {
+  description = "Retention period in days for application container log groups."
+  type        = number
+}
+
+variable "ecs_exec_log_retention_days" {
+  description = "Retention period in days for ECS execute-command session logs."
+  type        = number
+}
+
 variable "pub_sub_1a_cidr" {
   description = "CIDR block for public subnet 1 availability zone a cidr."
   type        = string
