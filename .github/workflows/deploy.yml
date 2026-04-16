@@ -1,4 +1,4 @@
-name: Build, Push, and Deploy to ECS
+﻿name: Build, Push, and Deploy to ECS
 
 on:
   push:
@@ -28,26 +28,28 @@ on:
           - dev
           - prod
           - all
-      build_frontend:
-        description: "Build & Deploy Frontend?"
-        type: boolean
+      # Replaces the build_frontend/get_frontend boolean pair.
+      # A single choice makes the intent unambiguous and prevents operators from
+      # accidentally enabling both flags at once (which silently favoured "build").
+      frontend_image_strategy:
+        description: "Frontend image strategy"
+        type: choice
         required: true
-        default: true
-      get_frontend:
-        description: "Get Frontend image from ECR?"
-        type: boolean
+        default: build
+        options:
+          - build # Build a fresh image and push to ECR
+          - fetch # Reuse the latest image already in ECR
+          - skip # Do not include frontend in this run
+      # Same replacement for the backend boolean pair.
+      backend_image_strategy:
+        description: "Backend image strategy"
+        type: choice
         required: true
-        default: false
-      build_backend:
-        description: "Build & Deploy Backend?"
-        type: boolean
-        required: true
-        default: true
-      get_backend:
-        description: "Get Backend image from ECR?"
-        type: boolean
-        required: true
-        default: false
+        default: build
+        options:
+          - build
+          - fetch
+          - skip
       run_seeding:
         description: "Build Seeder & Seed Database?"
         type: boolean
@@ -152,11 +154,32 @@ jobs:
     name: Detect Changed Paths & Setup Matrix
     needs: predeploy-guardrails
     runs-on: ubuntu-latest
+    # Push events always target dev only -- production deploys must be triggered manually.
+    # This policy ensures push-based automation cannot reach prod without an explicit operator
+    # decision, even if the commit touches prod-relevant code paths.
+    # Manual dispatch is the only path to prod (or to running both envs in parallel via "all").
     outputs:
-      # Output includes component+environment object matrix for build-and-deploy job.
+      # Component+environment object matrix consumed by build-and-deploy and rollback jobs.
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      # Output environment list for seed job matrix.
+      # Prod-only subset -- used by jobs that should run on prod always but on dev only
+      # when explicitly requested (e.g. notifications on push events).
+      prod_matrix: ${{ steps.set-matrix.outputs.prod_matrix }}
+      # Environment-only list for jobs that are per-environment, not per-component (probe, seed).
       env_matrix: ${{ steps.set-matrix.outputs.env_matrix }}
+      # Pre-computed boolean that collapses the telemetry gate condition.
+      # True when: manual dispatch with enable_telemetry_gate=true and at least one component
+      # in scope, OR when prod is targeted (prod always gets telemetry regardless of the toggle).
+      # Computed here so downstream job if: blocks stay readable single-condition checks.
+      run_telemetry_gate: ${{ steps.set-matrix.outputs.run_telemetry_gate }}
+      # Pre-computed matrix for telemetry gate jobs. Resolves the conditional "full matrix vs
+      # prod-only matrix" selection that previously lived as a fragile || expression inside
+      # each job's matrix.include key.
+      telemetry_matrix: ${{ steps.set-matrix.outputs.telemetry_matrix }}
+      # Pre-computed matrix for deploy-started notifications.
+      # Dispatch runs notify for every component in scope (full matrix).
+      # Push runs notify only when prod is affected (prod_matrix) to avoid spamming
+      # notifications for routine dev-targeting pushes.
+      notify_matrix: ${{ steps.set-matrix.outputs.notify_matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -230,40 +253,44 @@ jobs:
 
       - name: Calculate Dynamic Matrix
         id: set-matrix
+        shell: bash
         run: |
+          set -euo pipefail
+
+          # ----- matrix input setup -----------------------------------------
           COMPONENTS=()
           TARGET_ENVS=()
 
-          # 1. PUSH EVENT: Only build based on path filters
+          # ----- push event component/environment policy --------------------
+          # 1. PUSH EVENT: build only what changed; always target dev only.
           if [ "${{ github.event_name }}" == "push" ]; then
             FRONTEND_CHANGED="${{ steps.filter.outputs.frontend || steps.filter-fallback.outputs.frontend }}"
             BACKEND_CHANGED="${{ steps.filter.outputs.backend || steps.filter-fallback.outputs.backend }}"
 
             if [ "$FRONTEND_CHANGED" == "true" ]; then COMPONENTS+=("frontend"); fi
-            if [ "$BACKEND_CHANGED" == "true" ]; then COMPONENTS+=("backend"); fi
-            # Probe is built in its own post-deploy job, so we only need app components here.
-            # For push events we deploy dev only by default to keep production gated.
+            if [ "$BACKEND_CHANGED" == "true" ]; then  COMPONENTS+=("backend");  fi
             TARGET_ENVS=("dev")
 
-          # 2. MANUAL TRIGGER: Include if EITHER build or get is true
+          # ----- manual dispatch component/environment policy ---------------
+          # 2. MANUAL TRIGGER: resolve components from the image-strategy choice inputs.
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual rollback is a separate job path, so deployment matrices should stay empty.
+
+            # Manual rollback uses its own job path. Emit empty matrices and stop so that
+            # the deploy/probe/telemetry graph is fully skipped.
             if [ "${{ inputs.action_type }}" == "rollback" ]; then
-              echo "matrix=[]" >> $GITHUB_OUTPUT
-              echo "env_matrix=[]" >> $GITHUB_OUTPUT
+              echo "matrix=[]"                >> "$GITHUB_OUTPUT"
+              echo "prod_matrix=[]"           >> "$GITHUB_OUTPUT"
+              echo "env_matrix=[]"            >> "$GITHUB_OUTPUT"
+              echo "run_telemetry_gate=false" >> "$GITHUB_OUTPUT"
+              echo "telemetry_matrix=[]"      >> "$GITHUB_OUTPUT"
+              echo "notify_matrix=[]"         >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
-            # Check Frontend
-            if [[ "${{ inputs.build_frontend }}" == "true" || "${{ inputs.get_frontend }}" == "true" ]]; then
-               COMPONENTS+=("frontend")
-            fi
-            # Check Backend
-            if [[ "${{ inputs.build_backend }}" == "true" || "${{ inputs.get_backend }}" == "true" ]]; then
-               COMPONENTS+=("backend")
-            fi
+            # "skip" means the operator explicitly excluded this component from the run.
+            if [ "${{ inputs.frontend_image_strategy }}" != "skip" ]; then COMPONENTS+=("frontend"); fi
+            if [ "${{ inputs.backend_image_strategy }}"  != "skip" ]; then COMPONENTS+=("backend");  fi
 
-            # Manual trigger can target one environment or both in parallel.
             if [ "${{ inputs.target_environment }}" == "all" ]; then
               TARGET_ENVS=("dev" "prod")
             else
@@ -271,42 +298,91 @@ jobs:
             fi
           fi
 
-          # Build object matrix: [{ "component":"frontend", "environment":"dev" }, ...]
+          # ----- core matrix rendering --------------------------------------
+          # Build componentxenvironment object matrix: [{component, environment}, ...]
           if [ ${#COMPONENTS[@]} -eq 0 ] || [ ${#TARGET_ENVS[@]} -eq 0 ]; then
             MATRIX_JSON="[]"
           else
             MATRIX_JSON=$(jq -cn \
               --argjson comps "$(printf '%s\n' "${COMPONENTS[@]}" | jq -R . | jq -s .)" \
-              --argjson envs "$(printf '%s\n' "${TARGET_ENVS[@]}" | jq -R . | jq -s .)" \
+              --argjson envs  "$(printf '%s\n' "${TARGET_ENVS[@]}"  | jq -R . | jq -s .)" \
               '[ $comps[] as $c | $envs[] as $e | {component: $c, environment: $e} ]')
           fi
 
-          # Environment-only matrix for seeding job.
+          # ----- environment-only matrix ------------------------------------
+          # Environment-only matrix for jobs that run once per environment (probe, seed).
           if [ ${#TARGET_ENVS[@]} -eq 0 ]; then
             ENV_MATRIX_JSON="[]"
           else
             ENV_MATRIX_JSON=$(printf '%s\n' "${TARGET_ENVS[@]}" | jq -R . | jq -s -c .)
           fi
 
-          echo "Calculated Matrix: $MATRIX_JSON"
-          echo "Calculated Env Matrix: $ENV_MATRIX_JSON"
-          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
-          echo "env_matrix=$ENV_MATRIX_JSON" >> $GITHUB_OUTPUT
+          # ----- prod-only subset -------------------------------------------
+          # Prod-only subset -- lets downstream jobs apply "prod always, dev only on explicit
+          # request" logic without putting conditional expressions inside matrix.include keys.
+          if [ "$MATRIX_JSON" = "[]" ]; then
+            PROD_MATRIX_JSON="[]"
+          else
+            PROD_MATRIX_JSON=$(printf '%s' "$MATRIX_JSON" \
+              | jq -c '[ .[] | select(.environment == "prod") ]')
+          fi
+
+          # ----- telemetry policy outputs -----------------------------------
+          # Pre-compute the telemetry gate flag so downstream if: blocks stay simple.
+          # Telemetry fires when:
+          #   a) operator enabled the toggle on a manual run with at least one component, OR
+          #   b) prod is in scope (prod always gets the telemetry gate, toggle is irrelevant).
+          DISPATCH_TELEMETRY="${{ github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true }}"
+          if [[ ("$DISPATCH_TELEMETRY" == "true" && "$MATRIX_JSON" != "[]") || "$PROD_MATRIX_JSON" != "[]" ]]; then
+            RUN_TELEMETRY="true"
+            # When telemetry is enabled for a manual run use the full matrix; push events
+            # (dev-only) never hit prod so prod_matrix already captures the right scope.
+            if [[ "$DISPATCH_TELEMETRY" == "true" && "$MATRIX_JSON" != "[]" ]]; then
+              TELEMETRY_MATRIX_JSON="$MATRIX_JSON"
+            else
+              TELEMETRY_MATRIX_JSON="$PROD_MATRIX_JSON"
+            fi
+          else
+            RUN_TELEMETRY="false"
+            TELEMETRY_MATRIX_JSON="[]"
+          fi
+
+          # ----- notification policy outputs --------------------------------
+          # Notification matrix: dispatch runs notify for all components; push runs notify
+          # only for prod-targeted components (push never reaches prod, so this is a no-op
+          # guard that avoids spamming notifications for routine dev-targeting push events).
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            NOTIFY_MATRIX_JSON="$MATRIX_JSON"
+          else
+            NOTIFY_MATRIX_JSON="$PROD_MATRIX_JSON"
+          fi
+
+          # ----- debug output and workflow outputs ---------------------------
+          echo "Calculated Matrix:           $MATRIX_JSON"
+          echo "Calculated Prod Matrix:      $PROD_MATRIX_JSON"
+          echo "Calculated Env Matrix:       $ENV_MATRIX_JSON"
+          echo "Run Telemetry Gate:          $RUN_TELEMETRY"
+          echo "Calculated Telemetry Matrix: $TELEMETRY_MATRIX_JSON"
+          echo "Calculated Notify Matrix:    $NOTIFY_MATRIX_JSON"
+
+          echo "matrix=$MATRIX_JSON"                     >> "$GITHUB_OUTPUT"
+          echo "prod_matrix=$PROD_MATRIX_JSON"           >> "$GITHUB_OUTPUT"
+          echo "env_matrix=$ENV_MATRIX_JSON"             >> "$GITHUB_OUTPUT"
+          echo "run_telemetry_gate=$RUN_TELEMETRY"       >> "$GITHUB_OUTPUT"
+          echo "telemetry_matrix=$TELEMETRY_MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo "notify_matrix=$NOTIFY_MATRIX_JSON"       >> "$GITHUB_OUTPUT"
+
   # ---------------------------------------------------------
   # 2. BUILD & DEPLOY (Matrix for Frontend / Backend)
   # ---------------------------------------------------------
   build-and-deploy:
     name: Build & Deploy ${{ matrix.component }} (${{ matrix.environment }})
     needs: [predeploy-guardrails, detect-changes]
-    # CRITICAL: If the array is empty, skip this job entirely to prevent matrix errors
     if: ${{ needs.detect-changes.outputs.matrix != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        # This dynamically loads component+environment objects from detect-changes.
         include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    # The caller keeps only orchestration concerns here: matrix expansion, deploy policy
-    # selection, and dependency wiring. The cloud mechanics now live in a reusable workflow.
     uses: ./.github/workflows/reusable-deploy-service.yml
     with:
       environment: ${{ matrix.environment }}
@@ -316,30 +392,30 @@ jobs:
       enable_security_scan: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_security_scan || false }}
       enable_sbom: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_sbom || false }}
       vulnerability_threshold: ${{ github.event_name == 'workflow_dispatch' && inputs.vulnerability_threshold || 'CRITICAL' }}
-      # Workflow-level defaults are explicit test controls now: callers can still override
-      # specific jobs later, but the dispatch contract always speaks in concrete ECS terms.
       service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SERVICE_NETWORK_MODE }}
-      # Service networking is component-aware now so frontend and backend can evolve toward
-      # separate private subnet groups without teaching the lower-level actions about tiers.
+      # Per-component networking lets frontend and backend evolve toward separate subnet
+      # groups independently without teaching the reusable workflow about tiers.
       subnet_tag_values: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SUBNET_TAG_VALUES) || vars.SERVICE_SUBNET_TAG_VALUES || '' }}
       security_group_name: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SECURITY_GROUP_NAME) || vars.SERVICE_SECURITY_GROUP_NAME || '' }}
       assign_public_ip: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP) || vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
-      # Caller-owned image policy keeps the reusable deploy workflow honest: it executes the
-      # requested strategy, while deploy.yml remains the single place where rollout intent lives.
-      # Push events always build fresh images. Manual runs can choose per component whether
-      # deploy should build a new image or reuse one that is already in ECR.
-      build_image: ${{ github.event_name == 'push' || (matrix.component == 'frontend' && inputs.build_frontend) || (matrix.component == 'backend' && inputs.build_backend) }}
-      fetch_image: ${{ github.event_name == 'workflow_dispatch' && ((matrix.component == 'frontend' && inputs.get_frontend) || (matrix.component == 'backend' && inputs.get_backend)) }}
+      # Image policy is caller-owned: deploy.yml decides what to build/fetch; the reusable
+      # workflow executes the strategy without needing to know which event triggered it.
+      # Push events always build fresh. Manual runs use the per-component strategy choice.
+      build_image: ${{ github.event_name == 'push' || (matrix.component == 'frontend' && inputs.frontend_image_strategy == 'build') || (matrix.component == 'backend' && inputs.backend_image_strategy == 'build') }}
+      fetch_image: ${{ github.event_name == 'workflow_dispatch' && ((matrix.component == 'frontend' && inputs.frontend_image_strategy == 'fetch') || (matrix.component == 'backend' && inputs.backend_image_strategy == 'fetch')) }}
     secrets: inherit
 
   notify-deploy-started:
     name: Notify Deploy Started ${{ matrix.component }} (${{ matrix.environment }})
     needs: [predeploy-guardrails, detect-changes]
-    if: ${{ needs.detect-changes.outputs.matrix != '[]' && (github.event_name == 'workflow_dispatch' || matrix.environment == 'prod') }}
+    if: ${{ needs.detect-changes.outputs.notify_matrix != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+        # notify_matrix is pre-computed in detect-changes:
+        # dispatch -> full matrix (all components in scope get a notification)
+        # push     -> prod_matrix (no-op for now since push never reaches prod)
+        include: ${{ fromJson(needs.detect-changes.outputs.notify_matrix) }}
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials for notification publishing
@@ -369,25 +445,22 @@ jobs:
   probe-app:
     name: Probe App (${{ matrix.environment }})
     needs: [predeploy-guardrails, detect-changes, build-and-deploy]
-    if: ${{ needs.detect-changes.outputs.env_matrix != '[]' || needs.detect-changes.outputs.matrix != '[]' }}
+    # env_matrix is derived from the same TARGET_ENVS as matrix -- if one is empty, both are.
+    # A single guard is sufficient; the redundant matrix != '[]' check has been removed.
+    if: ${{ needs.detect-changes.outputs.env_matrix != '[]' }}
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
-    # Probe is now a reusable orchestration unit because it combines task registration,
-    # awsvpc execution, log surfacing, pointer updates, and manifest persistence.
     uses: ./.github/workflows/reusable-probe-environment.yml
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      # Probe image policy also stays caller-owned. Normal deploy validation uses a
-      # fetch-first strategy so the first probe can self-seed ECR and later probes
-      # reuse that image instead of rebuilding it every time.
       build_image: true
       fetch_image: false
-      # EC2 based probes take too long to stop
-      # Keep all probe-style jobs on the faster-stop Fargate/awsvpc path instead of
-      # inheriting broader workflow defaults that are better suited to long-lived services.
+      # Probes always run on Fargate/awsvpc for faster task stop times.
+      # EC2-backed tasks take significantly longer to drain, which inflates probe durations
+      # and delays the rollback trigger window when validation fails.
       probe_launch_type: FARGATE
       probe_network_mode: awsvpc
     secrets: inherit
@@ -398,13 +471,13 @@ jobs:
   evaluate-release-health:
     name: Evaluate Release Health ${{ matrix.component }} (${{ matrix.environment }})
     needs: [predeploy-guardrails, detect-changes, build-and-deploy, probe-app]
-    if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && needs.probe-app.result == 'success' && (matrix.environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true)) && ((matrix.component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '') || (matrix.component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != '')) }}
+    # run_telemetry_gate and telemetry_matrix are both computed in detect-changes, so the
+    # gate condition and its matrix source stay in sync automatically.
+    if: ${{ always() && needs.probe-app.result == 'success' && needs.detect-changes.outputs.run_telemetry_gate == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    # Telemetry validation is intentionally a separate reusable workflow so smoke tests,
-    # CloudWatch-based release checks, and rollback orchestration can evolve independently.
+        include: ${{ fromJson(needs.detect-changes.outputs.telemetry_matrix) }}
     uses: ./.github/workflows/reusable-evaluate-release-health.yml
     with:
       environment: ${{ matrix.environment }}
@@ -415,18 +488,23 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------
-  # 5. ROLLBACK (Use SSM last-known-good pointer when probe/finalize fails)
+  # 5. ROLLBACK (Use SSM last-known-good pointer when probe/telemetry fails)
   # ---------------------------------------------------------
   rollback:
     name: Roll Back ${{ matrix.component }} (${{ matrix.environment }})
-    needs: [predeploy-guardrails, detect-changes, build-and-deploy, probe-app, evaluate-release-health]
+    needs:
+      [
+        predeploy-guardrails,
+        detect-changes,
+        build-and-deploy,
+        probe-app,
+        evaluate-release-health,
+      ]
     if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' && (needs.probe-app.result == 'failure' || needs.evaluate-release-health.result == 'failure') }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    # Automatic rollback is now a reusable workflow because the whole recovery sequence is
-    # repeated orchestration: metadata download, pointer lookup, service rollback, and manifests.
     uses: ./.github/workflows/reusable-auto-rollback.yml
     with:
       environment: ${{ matrix.environment }}
@@ -434,7 +512,6 @@ jobs:
       project_name: ${{ vars.PROJECT_NAME }}
       service_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || '' }}
       service_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || '' }}
-      # Rollback should target the same tier-specific network boundary the forward deploy used.
       security_group_name: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SECURITY_GROUP_NAME) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SECURITY_GROUP_NAME) || vars.SERVICE_SECURITY_GROUP_NAME || '' }}
       subnet_tag_values: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_SUBNET_TAG_VALUES) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_SUBNET_TAG_VALUES) || vars.SERVICE_SUBNET_TAG_VALUES || '' }}
       assign_public_ip: ${{ (matrix.component == 'frontend' && vars.FRONTEND_SERVICE_ASSIGN_PUBLIC_IP) || (matrix.component == 'backend' && vars.BACKEND_SERVICE_ASSIGN_PUBLIC_IP) || vars.SERVICE_ASSIGN_PUBLIC_IP || '' }}
@@ -451,20 +528,19 @@ jobs:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
-    # Rollback should be treated like a recovery deployment, not assumed healthy by default.
-    # We reuse the same probe workflow, but explicitly disable pointer advancement because
-    # rollback verification is confirming recovery, not promoting a new revision.
     uses: ./.github/workflows/reusable-probe-environment.yml
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      # Rollback verification should only validate recovery using the already-published
-      # probe image. Fetch-only keeps this path fast and avoids mutating probe artifacts.
+      # Fetch-only: the probe image was already published during the forward deploy probe.
+      # Rebuilding here would mutate probe artifacts and obscure whether the issue was
+      # in the app image or the probe itself.
       build_image: false
       fetch_image: true
-      # Recovery verification should use the same fast probe runtime as normal validation.
       probe_launch_type: FARGATE
       probe_network_mode: awsvpc
+      # Pointer advancement is disabled -- this probe is confirming recovery, not promoting
+      # a new revision. Advancing the pointer here would corrupt the last-known-good reference.
       update_pointers_on_success: false
       probe_purpose: rollback_verification
     secrets: inherit
@@ -474,12 +550,13 @@ jobs:
   # ---------------------------------------------------------
   evaluate-rollback-health:
     name: Evaluate Rollback Health ${{ matrix.component }} (${{ matrix.environment }})
-    needs: [predeploy-guardrails, detect-changes, rollback, verify-rollback-recovery]
-    if: ${{ always() && needs.rollback.result == 'success' && needs.verify-rollback-recovery.result == 'success' && (matrix.environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true)) && ((matrix.component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '') || (matrix.component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != '')) }}
+    needs:
+      [predeploy-guardrails, detect-changes, rollback, verify-rollback-recovery]
+    if: ${{ always() && needs.rollback.result == 'success' && needs.verify-rollback-recovery.result == 'success' && needs.detect-changes.outputs.run_telemetry_gate == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+        include: ${{ fromJson(needs.detect-changes.outputs.telemetry_matrix) }}
     uses: ./.github/workflows/reusable-evaluate-release-health.yml
     with:
       environment: ${{ matrix.environment }}
@@ -497,8 +574,6 @@ jobs:
     name: Manual Roll Back ${{ inputs.rollback_component }} (${{ inputs.target_environment }})
     needs: predeploy-guardrails
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
-    # Manual rollback remains a separate reusable workflow from auto rollback because its
-    # contract is operator-driven: explicit ARN, manifest history, or trusted SSM fallback.
     uses: ./.github/workflows/reusable-manual-rollback.yml
     with:
       environment: ${{ inputs.target_environment }}
@@ -520,17 +595,12 @@ jobs:
     name: Verify Manual Rollback Recovery (${{ inputs.target_environment }})
     needs: [predeploy-guardrails, manual-rollback]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' && needs.manual-rollback.result == 'success' }}
-    # Manual rollback deserves the same health verification as automatic rollback.
-    # We keep it separate from the rollback workflow itself so the graph clearly shows
-    # "recovery action" and "recovery verification" as two different outcomes.
     uses: ./.github/workflows/reusable-probe-environment.yml
     with:
       environment: ${{ inputs.target_environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      # Manual rollback recovery follows the same fetch-only probe rule as auto rollback.
       build_image: false
       fetch_image: true
-      # Manual rollback verification should use the same fast probe runtime as normal validation.
       probe_launch_type: FARGATE
       probe_network_mode: awsvpc
       update_pointers_on_success: false
@@ -542,8 +612,21 @@ jobs:
   # ---------------------------------------------------------
   evaluate-manual-rollback-health:
     name: Evaluate Manual Rollback Health (${{ inputs.target_environment }})
-    needs: [predeploy-guardrails, manual-rollback, verify-manual-rollback-recovery]
-    if: ${{ always() && needs.manual-rollback.result == 'success' && needs.verify-manual-rollback-recovery.result == 'success' && (inputs.target_environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true)) && ((inputs.rollback_component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '') || (inputs.rollback_component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != '')) }}
+    needs:
+      [predeploy-guardrails, manual-rollback, verify-manual-rollback-recovery]
+    # Manual rollback telemetry runs when:
+    #   - prod is targeted (always gets telemetry), OR
+    #   - the operator explicitly enabled the gate on a dev run.
+    # Additionally, guard on alarm_names being configured -- no alarms means nothing to evaluate.
+    if: >-
+      ${{
+        always()
+        && needs.manual-rollback.result == 'success'
+        && needs.verify-manual-rollback-recovery.result == 'success'
+        && (inputs.target_environment == 'prod' || (github.event_name == 'workflow_dispatch' && inputs.enable_telemetry_gate == true))
+        && ((inputs.rollback_component == 'frontend' && vars.FRONTEND_RELEASE_ALARM_NAMES != '')
+            || (inputs.rollback_component == 'backend' && vars.BACKEND_RELEASE_ALARM_NAMES != ''))
+      }}
     uses: ./.github/workflows/reusable-evaluate-release-health.yml
     with:
       environment: ${{ inputs.target_environment }}
@@ -560,35 +643,40 @@ jobs:
   seed-database:
     name: Build & Run DB Seeder
     needs: [predeploy-guardrails, detect-changes]
-    # ONLY runs on workflow dispatch AND if run_seeding is explicitly checked
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_seeding == true }}
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.detect-changes.outputs.env_matrix) }}
-    # Database seeding is now reusable orchestration too: build/register the seeder revision,
-    # execute it in the correct network mode, and surface the task result and logs consistently.
     uses: ./.github/workflows/reusable-seed-database.yml
     with:
       environment: ${{ matrix.environment }}
       project_name: ${{ vars.PROJECT_NAME }}
-      # Seeder follows the same caller-owned image policy pattern as deploy and probe.
-      # Today we intentionally build the seeder fresh for manual runs, but the choice is
-      # visible here now and can be changed later without editing the reusable workflow.
       build_image: true
       fetch_image: false
-      seeder_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || vars.SEEDER_LAUNCH_TYPE  }}
+      seeder_launch_type: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_launch_type) || vars.SEEDER_LAUNCH_TYPE }}
       seeder_network_mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.default_network_mode) || vars.SEEDER_NETWORK_MODE }}
-      # Seeder keeps its own networking contract because database mutation is a separate
-      # execution concern from frontend/backend service rollout.
       seeder_security_group_name: ${{ vars.SEEDER_SECURITY_GROUP_NAME || '' }}
       seeder_subnet_tag_values: ${{ vars.SEEDER_SUBNET_TAG_VALUES || '' }}
       seeder_assign_public_ip: ${{ vars.SEEDER_ASSIGN_PUBLIC_IP || '' }}
     secrets: inherit
 
+  # ---------------------------------------------------------
+  # 8. TERMINAL NOTIFICATIONS
+  # ---------------------------------------------------------
   notify-deploy-outcome:
     name: Notify Deploy Outcome ${{ matrix.component }} (${{ matrix.environment }})
-    needs: [predeploy-guardrails, detect-changes, build-and-deploy, probe-app, evaluate-release-health, rollback, verify-rollback-recovery, evaluate-rollback-health]
+    needs:
+      [
+        predeploy-guardrails,
+        detect-changes,
+        build-and-deploy,
+        probe-app,
+        evaluate-release-health,
+        rollback,
+        verify-rollback-recovery,
+        evaluate-rollback-health,
+      ]
     if: ${{ always() && needs.detect-changes.outputs.matrix != '[]' }}
     strategy:
       fail-fast: false
@@ -602,6 +690,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ----- job result inputs -------------------------------------------
           BUILD_RESULT="${{ needs.build-and-deploy.result }}"
           PROBE_RESULT="${{ needs.probe-app.result }}"
           TELEMETRY_RESULT="${{ needs.evaluate-release-health.result }}"
@@ -609,34 +698,53 @@ jobs:
           VERIFY_ROLLBACK_RESULT="${{ needs.verify-rollback-recovery.result }}"
           ROLLBACK_TELEMETRY_RESULT="${{ needs.evaluate-rollback-health.result }}"
 
+          # ----- default terminal outcome -----------------------------------
+          # Default: something failed and we don't know exactly where.
           EVENT="deploy_failed"
           STATUS="failure"
           SUMMARY="Deployment did not reach a healthy terminal state."
 
-          if [[ "$BUILD_RESULT" == "success" && "$PROBE_RESULT" == "success" && ( "$TELEMETRY_RESULT" == "success" || "$TELEMETRY_RESULT" == "skipped" ) ]]; then
+          # ----- terminal outcome resolution --------------------------------
+          # Evaluate states from most-recovered to least, so the most specific outcome wins.
+          if [[ "$BUILD_RESULT" == "success" && "$PROBE_RESULT" == "success"
+                && ( "$TELEMETRY_RESULT" == "success" || "$TELEMETRY_RESULT" == "skipped" ) ]]; then
             EVENT="deploy_succeeded"
             STATUS="success"
             SUMMARY="Deployment completed successfully and any enabled telemetry gate passed."
-          elif [[ "$ROLLBACK_RESULT" == "success" && "$VERIFY_ROLLBACK_RESULT" == "success" && ( "$ROLLBACK_TELEMETRY_RESULT" == "success" || "$ROLLBACK_TELEMETRY_RESULT" == "skipped" ) ]]; then
+
+          elif [[ "$BUILD_RESULT" == "failure" ]]; then
+            # Build failed before probe could run -- distinguish from a post-deploy failure
+            # so operators know whether to investigate the image build or the running service.
+            EVENT="build_failed"
+            STATUS="failure"
+            SUMMARY="Image build or ECS service update failed before probe could run."
+
+          elif [[ "$ROLLBACK_RESULT" == "success" && "$VERIFY_ROLLBACK_RESULT" == "success"
+                  && ( "$ROLLBACK_TELEMETRY_RESULT" == "success" || "$ROLLBACK_TELEMETRY_RESULT" == "skipped" ) ]]; then
             EVENT="rollback_recovered"
             STATUS="recovered"
             SUMMARY="Deployment failure triggered rollback, and rollback verification completed successfully."
-          elif [[ "$ROLLBACK_RESULT" == "success" && ( "$VERIFY_ROLLBACK_RESULT" == "failure" || "$ROLLBACK_TELEMETRY_RESULT" == "failure" ) ]]; then
+
+          elif [[ "$ROLLBACK_RESULT" == "success"
+                  && ( "$VERIFY_ROLLBACK_RESULT" == "failure" || "$ROLLBACK_TELEMETRY_RESULT" == "failure" ) ]]; then
             EVENT="rollback_verification_failed"
             STATUS="failure"
             SUMMARY="Rollback executed, but post-rollback verification or rollback telemetry still reported the environment unhealthy."
+
           elif [[ "$ROLLBACK_RESULT" == "failure" ]]; then
             EVENT="rollback_failed"
             STATUS="failure"
             SUMMARY="Rollback was triggered but did not complete successfully."
+
           elif [[ "$PROBE_RESULT" == "failure" || "$TELEMETRY_RESULT" == "failure" ]]; then
             EVENT="rollback_triggered"
             STATUS="degraded"
             SUMMARY="Deployment validation failed and rollback handling was triggered."
           fi
 
-          echo "event=$EVENT" >> "$GITHUB_OUTPUT"
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          # ----- action outputs ----------------------------------------------
+          echo "event=$EVENT"     >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS"   >> "$GITHUB_OUTPUT"
           echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials for notification publishing
@@ -662,7 +770,13 @@ jobs:
 
   notify-manual-rollback-outcome:
     name: Notify Manual Rollback Outcome (${{ inputs.target_environment }})
-    needs: [predeploy-guardrails, manual-rollback, verify-manual-rollback-recovery, evaluate-manual-rollback-health]
+    needs:
+      [
+        predeploy-guardrails,
+        manual-rollback,
+        verify-manual-rollback-recovery,
+        evaluate-manual-rollback-health,
+      ]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action_type == 'rollback' }}
     runs-on: ubuntu-latest
     steps:
@@ -672,26 +786,32 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ----- job result inputs -------------------------------------------
           ROLLBACK_RESULT="${{ needs.manual-rollback.result }}"
           VERIFY_RESULT="${{ needs.verify-manual-rollback-recovery.result }}"
           TELEMETRY_RESULT="${{ needs.evaluate-manual-rollback-health.result }}"
 
+          # ----- default terminal outcome -----------------------------------
           EVENT="manual_rollback_failed"
           STATUS="failure"
           SUMMARY="Manual rollback did not complete successfully."
 
-          if [[ "$ROLLBACK_RESULT" == "success" && "$VERIFY_RESULT" == "success" && ( "$TELEMETRY_RESULT" == "success" || "$TELEMETRY_RESULT" == "skipped" ) ]]; then
+          # ----- terminal outcome resolution --------------------------------
+          if [[ "$ROLLBACK_RESULT" == "success" && "$VERIFY_RESULT" == "success"
+                && ( "$TELEMETRY_RESULT" == "success" || "$TELEMETRY_RESULT" == "skipped" ) ]]; then
             EVENT="manual_rollback_succeeded"
             STATUS="success"
             SUMMARY="Manual rollback completed successfully and post-rollback validation reported the environment healthy."
-          elif [[ "$ROLLBACK_RESULT" == "success" && ( "$VERIFY_RESULT" == "failure" || "$TELEMETRY_RESULT" == "failure" ) ]]; then
+
+          elif [[ "$ROLLBACK_RESULT" == "success"
+                  && ( "$VERIFY_RESULT" == "failure" || "$TELEMETRY_RESULT" == "failure" ) ]]; then
             EVENT="manual_rollback_verification_failed"
             STATUS="failure"
             SUMMARY="Manual rollback executed, but rollback verification or rollback telemetry still reported the environment unhealthy."
           fi
 
-          echo "event=$EVENT" >> "$GITHUB_OUTPUT"
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT"     >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS"   >> "$GITHUB_OUTPUT"
           echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials for notification publishing
@@ -714,3 +834,4 @@ jobs:
           change_ticket: ${{ inputs.change_ticket || '' }}
           workflow_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           summary: ${{ steps.status.outputs.summary }}
+
