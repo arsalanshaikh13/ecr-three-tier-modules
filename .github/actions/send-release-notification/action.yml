@@ -132,11 +132,17 @@ runs:
       env:
         RENDERED_SUBJECT: ${{ steps.render.outputs.subject }}
         RENDERED_MESSAGE: ${{ steps.render.outputs.message }}
+        INPUT_TOPIC_ARN: ${{ inputs.topic_arn }}
+        INPUT_REGION: ${{ inputs.aws_region }}
       run: |
         set -euo pipefail
 
+        # ----- input normalization -------------------------------------------
+        # Strip literal quotes (e.g. if operator typed "" in GitHub Variables UI)
+        CLEAN_TOPIC_ARN=$(echo "$INPUT_TOPIC_ARN" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+
         # ----- publish skip path ---------------------------------------------
-        if [ -z "${{ inputs.topic_arn }}" ]; then
+        if [ -z "$CLEAN_TOPIC_ARN" ]; then
           echo "skipped=true" >> "$GITHUB_OUTPUT"
           echo "message_id=" >> "$GITHUB_OUTPUT"
           exit 0
@@ -144,8 +150,8 @@ runs:
 
         # ----- SNS publish ---------------------------------------------------
         MESSAGE_ID="$(aws sns publish \
-          --region "${{ inputs.aws_region }}" \
-          --topic-arn "${{ inputs.topic_arn }}" \
+          --region "$INPUT_REGION" \
+          --topic-arn "$CLEAN_TOPIC_ARN" \
           --subject "$RENDERED_SUBJECT" \
           --message "$RENDERED_MESSAGE" \
           --query 'MessageId' \
