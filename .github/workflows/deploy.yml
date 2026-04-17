@@ -176,7 +176,7 @@ jobs:
       # Pre-computed boolean that collapses the telemetry gate condition.
       # True when: manual dispatch with enable_telemetry_gate=true and at least one component
       # in scope, OR when prod is targeted (prod always gets telemetry regardless of the toggle).
-      # Computed here so downstream job if: blocks stay readable single-condition checks.
+      # Computed here so downstream job if blocks stay readable single-condition checks.
       run_telemetry_gate: ${{ steps.set-matrix.outputs.run_telemetry_gate }}
       # Pre-computed matrix for telemetry gate jobs. Resolves the conditional "full matrix vs
       # prod-only matrix" selection that previously lived as a fragile || expression inside
