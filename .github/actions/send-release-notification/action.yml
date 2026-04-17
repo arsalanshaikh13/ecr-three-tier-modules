@@ -143,9 +143,10 @@ runs:
 
         # ----- publish skip path ---------------------------------------------
         if [ -z "$CLEAN_TOPIC_ARN" ]; then
+          echo "::error title=Missing Topic ARN::The topic ARN is empty. A valid SNS topic ARN is required to send notifications."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
           echo "message_id=" >> "$GITHUB_OUTPUT"
-          exit 0
+          exit 1
         fi
 
         # ----- SNS publish ---------------------------------------------------
