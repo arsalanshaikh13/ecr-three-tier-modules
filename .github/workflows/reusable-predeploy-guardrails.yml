@@ -88,9 +88,52 @@ jobs:
               ;;
           esac
 
-          # ----- prod control activation ------------------------------------
           if [ "$TARGET_ENV" = "prod" ] || [ "$TARGET_ENV" = "all" ]; then
             REQUIRES_PROD_CONTROLS="true"
+          fi
+
+          # ----- freeze window enforcement ----------------------------------
+          # Check the clock first. If the environment is frozen, it doesn't matter if the
+          # release metadata is valid -- the change is blocked.
+          #
+          # Format limitation: Windows cannot cross midnight (e.g., Sat 22:00-02:00).
+          # To block across midnight, configure two separate windows:
+          # e.g. PROD_FREEZE_WINDOWS_UTC="Sat 22:00-23:59, Sun 00:00-02:00"
+          if [ -n "$FREEZE_WINDOWS" ] && [ "$REQUIRES_PROD_CONTROLS" = "true" ] && [ -z "$BREAK_GLASS_REASON" ]; then
+            NOW_DAY=$(date -u +%a)
+            NOW_MINUTES=$((10#$(date -u +%H) * 60 + 10#$(date -u +%M)))
+
+            IFS=',' read -ra WINDOWS <<< "$FREEZE_WINDOWS"
+            for WINDOW in "${WINDOWS[@]}"; do
+              # Trim leading/trailing whitespace
+              WINDOW="$(echo "$WINDOW" | xargs)"
+              [ -z "$WINDOW" ] && continue
+
+              # Validate format: Day HH:MM-HH:MM (e.g., Sat 00:00-23:59)
+              # Prevents bad math evaluation if a user typoes the input.
+              if [[ ! "$WINDOW" =~ ^[A-Z][a-z]{2}\ [0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}$ ]]; then
+                echo "Warning: Ignored incorrectly formatted freeze window '$WINDOW'."
+                echo "Expected format: 'Day HH:MM-HH:MM' (e.g., Sat 00:00-23:59)"
+                continue
+              fi
+
+              WINDOW_DAY="${WINDOW%% *}"
+              WINDOW_RANGE="${WINDOW#* }"
+              WINDOW_START="${WINDOW_RANGE%-*}"
+              WINDOW_END="${WINDOW_RANGE#*-}"
+
+              if [ "$WINDOW_DAY" != "$NOW_DAY" ]; then
+                continue
+              fi
+
+              START_MINUTES=$((10#${WINDOW_START%%:*} * 60 + 10#${WINDOW_START##*:}))
+              END_MINUTES=$((10#${WINDOW_END%%:*} * 60 + 10#${WINDOW_END##*:}))
+
+              if [ "$NOW_MINUTES" -ge "$START_MINUTES" ] && [ "$NOW_MINUTES" -le "$END_MINUTES" ]; then
+                echo "Error: current UTC time falls within a configured freeze window ($WINDOW)."
+                exit 1
+              fi
+            done
           fi
 
           # ----- release version derivation ---------------------------------
@@ -112,34 +155,6 @@ jobs:
               echo "Error: prod-targeting operations require a change_ticket unless break_glass_reason is provided."
               exit 1
             fi
-          fi
-
-          if [ -n "$FREEZE_WINDOWS" ] && [ "$REQUIRES_PROD_CONTROLS" = "true" ] && [ -z "$BREAK_GLASS_REASON" ]; then
-            NOW_DAY=$(date -u +%a)
-            NOW_MINUTES=$((10#$(date -u +%H) * 60 + 10#$(date -u +%M)))
-
-            IFS=',' read -ra WINDOWS <<< "$FREEZE_WINDOWS"
-            for WINDOW in "${WINDOWS[@]}"; do
-              WINDOW="$(echo "$WINDOW" | xargs)"
-              [ -z "$WINDOW" ] && continue
-
-              WINDOW_DAY="${WINDOW%% *}"
-              WINDOW_RANGE="${WINDOW#* }"
-              WINDOW_START="${WINDOW_RANGE%-*}"
-              WINDOW_END="${WINDOW_RANGE#*-}"
-
-              if [ "$WINDOW_DAY" != "$NOW_DAY" ]; then
-                continue
-              fi
-
-              START_MINUTES=$((10#${WINDOW_START%%:*} * 60 + 10#${WINDOW_START##*:}))
-              END_MINUTES=$((10#${WINDOW_END%%:*} * 60 + 10#${WINDOW_END##*:}))
-
-              if [ "$NOW_MINUTES" -ge "$START_MINUTES" ] && [ "$NOW_MINUTES" -le "$END_MINUTES" ]; then
-                echo "Error: current UTC time falls within a configured freeze window ($WINDOW)."
-                exit 1
-              fi
-            done
           fi
 
           # ----- workflow outputs -------------------------------------------

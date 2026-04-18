@@ -141,6 +141,7 @@ jobs:
       - name: Publish approval context
         shell: bash
         run: |
+          # ----- approval context rendering ----------------------------------
           {
             echo "## Prod Approval Context"
             echo "- Source environment: \`${{ inputs.source_environment }}\`"
@@ -167,6 +168,7 @@ jobs:
       - name: Validate promotion inputs
         shell: bash
         run: |
+          # ----- input validation --------------------------------------------
           if [[ "${{ inputs.promote_frontend }}" != "true" && "${{ inputs.promote_backend }}" != "true" ]]; then
             echo "Error: at least one component must be selected for promotion."
             exit 1
@@ -187,16 +189,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # ----- path & summary initialization --------------------------------
           mkdir -p promotion-manifests
           SUMMARY_FILE="promotion-manifests/promotion-summary.md"
           touch "$SUMMARY_FILE"
 
+          # ----- variable normalization ---------------------------------------
           DESTINATION_REGION="${{ vars.AWS_REGION }}"
           DESTINATION_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           SOURCE_REGION="${{ inputs.source_region }}"
           SOURCE_ENV="${{ inputs.source_environment }}"
           PROJECT="${{ vars.PROJECT_NAME }}"
 
+          # ----- manifest bucket resolution -----------------------------------
           # BUCKET="${{ vars.DEPLOYMENT_MANIFEST_BUCKET }}"
           # resolves to: lirw-ecs-deployment-manifests-dev
           BUCKET="${{ vars.DEPLOYMENT_MANIFEST_BUCKET_PREFIX }}-${SOURCE_ENV}"
@@ -208,6 +214,7 @@ jobs:
           echo "PROJECT: $PROJECT"
           echo "SOURCE_ENV: $SOURCE_ENV"
 
+          # ----- summary header ----------------------------------------------
           {
             echo "## Promotion Summary"
             echo "- Source environment: \`$SOURCE_ENV\`"
@@ -218,10 +225,12 @@ jobs:
             echo
           } >> "$SUMMARY_FILE"
 
+          # ----- promotion helper function -----------------------------------
           promote_component() {
             local component="$1"
             local manifest_input="$2"
 
+            # ----- source manifest resolution --------------------------------
             local manifest_key="$manifest_input"
             if [ -z "$manifest_key" ]; then
               # Promotion defaults to the newest successful manifest because that manifest
@@ -240,6 +249,7 @@ jobs:
 
             aws s3 cp "s3://$BUCKET/$manifest_key" "promotion-manifests/${component}-source-manifest.json" >/dev/null
 
+            # ----- image metadata extraction ---------------------------------
             local source_image_uri
             source_image_uri=$(jq -r '.imageUri // .image_uri' "promotion-manifests/${component}-source-manifest.json")
             local source_image_digest
@@ -255,6 +265,7 @@ jobs:
               exit 1
             fi
 
+            # ----- target repository resolution ------------------------------
             # The manifest stores the exact image that passed lower-environment probing.
             # Promote by digest, not just by tag. The SHA tag is still useful for readability,
             # but the digest is the immutable identity of the exact artifact that passed lower-env
@@ -285,6 +296,7 @@ jobs:
             #   --image-manifest "$image_manifest" >/dev/null
 
 
+            # ----- docker artifact promotion ---------------------------------
             # Login to SOURCE region ECR
             aws ecr get-login-password --region "$SOURCE_REGION" \
               | docker login --username AWS --password-stdin \
@@ -304,6 +316,7 @@ jobs:
             # Push to destination
             docker push "$destination_image_uri"
 
+            # ----- promoted digest verification -----------------------------
             local promoted_image_digest
             promoted_image_digest=$(aws ecr describe-images \
               --region "$DESTINATION_REGION" \
@@ -320,6 +333,7 @@ jobs:
             # Cleanup local image to save runner disk space
             docker rmi "$source_digest_uri" "$destination_image_uri" || true
 
+            # ----- promotion manifest generation -----------------------------
           jq -n \
             --arg project            "$PROJECT" \
             --arg sourceEnvironment  "$SOURCE_ENV" \
@@ -348,10 +362,12 @@ jobs:
               promotedAt: $promotedAt
             }' > "promotion-manifests/${component}-promotion.json"
 
+            # ----- manifest archival -----------------------------------------
             aws s3 cp \
               "promotion-manifests/${component}-promotion.json" \
               "s3://$BUCKET/$PROJECT/promotions/prod/$component/run-${{ github.run_id }}.json" >/dev/null
 
+            # ----- summary update --------------------------------------------
             {
               echo "### ${component} promoted to prod"
               echo "- Source manifest: \`$manifest_key\`"
@@ -363,6 +379,7 @@ jobs:
             } >> "$SUMMARY_FILE"
           }
 
+          # ----- component promotion execution -------------------------------
           if [ "${{ inputs.promote_frontend }}" = "true" ]; then
             promote_component "frontend" "${{ inputs.frontend_manifest_s3_key }}"
           fi
@@ -371,6 +388,7 @@ jobs:
             promote_component "backend" "${{ inputs.backend_manifest_s3_key }}"
           fi
 
+          # ----- step outputs -----------------------------------------------
           echo "summary_file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload promotion manifests
@@ -386,6 +404,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          # ----- workflow dispatch execution ----------------------------------
           # Promotion stays focused on approving and moving the image artifact.
           # The existing deploy.yml remains the single place that knows how to deploy,
           # probe, and rollback the prod services.
@@ -407,6 +426,7 @@ jobs:
             -f enable_sbom=${{ inputs.enable_sbom }} \
             -f vulnerability_threshold=${{ inputs.vulnerability_threshold }}
 
+          # ----- step outputs -----------------------------------------------
           {
             echo "triggered_ref=${{ github.ref_name }}"
             echo "run_seeding=${{ inputs.run_seeding_in_prod }}"
@@ -418,6 +438,7 @@ jobs:
       - name: Publish promotion summary to job summary
         shell: bash
         run: |
+          # ----- job summary rendering ---------------------------------------
           cat "${{ steps.promote-images.outputs.summary_file }}" >> "$GITHUB_STEP_SUMMARY"
 
           {
