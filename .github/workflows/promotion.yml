@@ -1,4 +1,4 @@
-name: Promote Image To Prod
+name:  Promote image to production and trigger deploy orchestrator
 
 on:
   workflow_dispatch:
