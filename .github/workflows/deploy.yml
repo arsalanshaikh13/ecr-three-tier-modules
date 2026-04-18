@@ -151,7 +151,6 @@ jobs:
       release_version: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
       change_ticket: ${{ github.event_name == 'workflow_dispatch' && inputs.change_ticket || '' }}
       break_glass_reason: ${{ github.event_name == 'workflow_dispatch' && inputs.break_glass_reason || '' }}
-      freeze_windows_utc: ${{ vars.PROD_FREEZE_WINDOWS_UTC || '' }}
 
   # ---------------------------------------------------------
   # 1. DETECT CHANGES (Path Filtering)

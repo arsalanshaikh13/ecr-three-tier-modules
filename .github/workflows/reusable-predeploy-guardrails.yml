@@ -26,11 +26,6 @@ on:
         required: false
         type: string
         default: ""
-      freeze_windows_utc:
-        description: "Optional comma-separated freeze windows in the form 'Sat 00:00-23:59,Sun 00:00-23:59'."
-        required: false
-        type: string
-        default: ""
       require_change_ticket_for_prod:
         description: "Whether prod-targeting operations require a change ticket unless break-glass is used."
         required: false
@@ -53,6 +48,7 @@ jobs:
   guardrails:
     name: Predeploy Guardrails (${{ inputs.target_environment }})
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     outputs:
       resolved_release_version: ${{ steps.guardrails.outputs.resolved_release_version }}
     steps:
@@ -68,7 +64,7 @@ jobs:
           RELEASE_VERSION="${{ inputs.release_version }}"
           CHANGE_TICKET="${{ inputs.change_ticket }}"
           BREAK_GLASS_REASON="${{ inputs.break_glass_reason }}"
-          FREEZE_WINDOWS="${{ inputs.freeze_windows_utc }}"
+          FREEZE_WINDOWS="${{ vars.PROD_FREEZE_WINDOWS_UTC || '' }}"
           REQUIRES_PROD_CONTROLS="false"
 
           # ----- supported input validation ---------------------------------

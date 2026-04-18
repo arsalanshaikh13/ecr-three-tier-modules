@@ -102,7 +102,6 @@ jobs:
       release_version: ${{ inputs.release_version }}
       change_ticket: ${{ inputs.change_ticket }}
       break_glass_reason: ${{ inputs.break_glass_reason }}
-      freeze_windows_utc: ${{ vars.PROD_FREEZE_WINDOWS_UTC || '' }}
 
   notify-prod-approval-requested:
     name: Notify Prod Approval Requested
