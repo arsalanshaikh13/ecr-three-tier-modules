@@ -167,6 +167,6 @@ jobs:
             echo "- Target environment: \`${{ inputs.target_environment }}\`"
             echo "- Action type: \`${{ inputs.action_type }}\`"
             echo "- Resolved release version: \`${{ steps.guardrails.outputs.resolved_release_version }}\`"
-            echo "- Change ticket provided: \`${{ inputs.change_ticket != '' }}\`"
-            echo "- Break glass used: \`${{ inputs.break_glass_reason != '' }}\`"
+            echo "- Change ticket: \`${{ inputs.change_ticket || 'None' }}\`"
+            echo "- Break glass reason: \`${{ inputs.break_glass_reason || 'None' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

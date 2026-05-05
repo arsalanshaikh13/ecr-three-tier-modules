@@ -145,8 +145,8 @@ jobs:
             echo "## Prod Approval Context"
             echo "- Source environment: \`${{ inputs.source_environment }}\`"
             echo "- Release version: \`${{ needs.predeploy-guardrails.outputs.resolved_release_version }}\`"
-            echo "- Change ticket: \`${{ inputs.change_ticket || 'not-provided' }}\`"
-            echo "- Break glass: \`${{ inputs.break_glass_reason != '' }}\`"
+            echo "- Change ticket: \`${{ inputs.change_ticket || 'None' }}\`"
+            echo "- Break glass reason: \`${{ inputs.break_glass_reason || 'None' }}\`"
             echo
             echo "Approval on \`prod-approval\` authorizes the release."
             echo "The actual image promotion and prod deployment dispatch happen in the next job."
