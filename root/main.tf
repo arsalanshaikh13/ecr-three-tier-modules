@@ -449,7 +449,6 @@ module "ecs_fargate" {
   domain_name  = "${local.env_suffix}.${var.domain_name}"
 
 
-
   common_tags                 = local.common_tags
   backend_tg_arn              = module.lb.backend_tg_arn
   db_name                     = module.rds.db_name
