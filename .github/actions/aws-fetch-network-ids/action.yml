@@ -39,9 +39,12 @@ runs:
           --query 'Subnets[*].SubnetId' \
           --output json | tr -d '\n' | tr -d ' ')
 
+        echo "DEBUG: inputs.subnet_tag_values = '${{ inputs.subnet_tag_values }}'"
+        echo "DEBUG: Resolved raw SUBNETS = '$SUBNETS'"
+
         # ----- validation ----------------------------------------------------
-        if [ "$SG_ID" = "None" ] || [ -z "$SUBNETS" ]; then
-          echo "Error: Could not find the requested security group or subnets."
+        if [ "$SG_ID" = "None" ] || [ -z "$SUBNETS" ] || [ "$SUBNETS" = "[]" ] || [ "$SUBNETS" = "null" ]; then
+          echo "Error: Could not find the requested security group ($SG_ID) or subnets ($SUBNETS) matching tag values: '${{ inputs.subnet_tag_values }}'"
           exit 1
         fi
 
