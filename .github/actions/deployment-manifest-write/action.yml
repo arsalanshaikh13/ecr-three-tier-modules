@@ -189,7 +189,10 @@ runs:
         # ----- manifest upload ------------------------------------------------
         # Tag manifest objects by retention class so S3 lifecycle can keep rollback-relevant
         # history longer than failure noise without relying on fragile filename parsing.
-        aws s3 cp "$MANIFEST_FILE" "s3://${{ inputs.bucket }}/$MANIFEST_S3_KEY" \
+        aws s3api put-object \
+          --bucket "${{ inputs.bucket }}" \
+          --key "$MANIFEST_S3_KEY" \
+          --body "$MANIFEST_FILE" \
           --tagging "manifest_class=${MANIFEST_CLASS}&manifest_status=${{ inputs.status }}"
 
         # ----- manifest index refresh -----------------------------------------
