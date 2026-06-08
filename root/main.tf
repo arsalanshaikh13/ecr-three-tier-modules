@@ -1,15 +1,17 @@
 
 module "vpc" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//vpc"
-  version = "0.3.6-three-tier-subnet"
+  version = "0.3.8-three-tier-subnet"
+  # version = "0.3.6-three-tier-subnet"
   # version = "0.2.6-db-vpc-pri-sub-tag"
   # version = "0.0.6-db-vpc-pri-sub-tag"
   common_tags     = local.common_tags
+  env_suffix      = local.env_suffix
   project_name    = var.project_name
   pub_sub_1a_cidr = var.pub_sub_1a_cidr
   pub_sub_2b_cidr = var.pub_sub_2b_cidr
-  pub_sub_3a_cidr = var.pub_sub_3a_cidr
-  pub_sub_4b_cidr = var.pub_sub_4b_cidr
+  pri_sub_3a_cidr = var.pri_sub_3a_cidr
+  pri_sub_4b_cidr = var.pri_sub_4b_cidr
   pri_sub_5a_cidr = var.pri_sub_5a_cidr
   pri_sub_6b_cidr = var.pri_sub_6b_cidr
   pri_sub_7a_cidr = var.pri_sub_7a_cidr
@@ -30,17 +32,20 @@ module "vpc" {
 # }
 module "nat_instance" {
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//nat_instance"
-  version = "0.3.6-three-tier-subnet"
+  version = "0.3.7-three-tier-subnet-nat-ins"
   # version = "0.1.7-nat-instance-tag"
   # version = "0.0.7-nat-instance"
-  pri_sub_3a_cidr  = var.pri_sub_3a_cidr
-  pri_sub_4b_cidr  = var.pri_sub_4b_cidr
+  # pri_sub_3a_cidr  = var.pri_sub_3a_cidr
+  # pri_sub_4b_cidr  = var.pri_sub_4b_cidr
   vpc_cidr_block   = var.vpc_cidr
   pub_sub_1a_id    = module.vpc.pub_sub_1a_id
   vpc_id           = module.vpc.vpc_id
   ecs_node_profile = module.iam.ecs_node_profile_name
   common_tags      = local.common_tags
-
+  pri_rt_a_id      = module.vpc.pri_rt_a_id
+  pri_rt_b_id      = module.vpc.pri_rt_b_id
+  project_name     = var.project_name
+  env_suffix       = local.env_suffix
 }
 
 
@@ -98,8 +103,8 @@ module "rds" {
   common_tags        = local.common_tags
   ecs_node_rds_sg_id = module.sg.ecs_node_rds_sg_id
   env_suffix         = local.env_suffix
-  pri_sub_5a_id      = module.vpc.pri_sub_5a_id
-  pri_sub_6b_id      = module.vpc.pri_sub_6b_id
+  pri_sub_7a_id      = module.vpc.pri_sub_7a_id
+  pri_sub_8b_id      = module.vpc.pri_sub_8b_id
   vpc_id             = module.vpc.vpc_id
 }
 
@@ -129,8 +134,8 @@ module "ssm" {
 module "s3" {
   # Keep Phase 6 retention work local-path based first so lifecycle changes can be
   # exercised in this workspace before publishing a new shared module version.
-  source       = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//s3"
-  version      = "0.1.15-s3-lifecycle"
+  source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//s3"
+  version = "0.1.15-s3-lifecycle"
   # version      = "0.0.15-s3-ssm-deploy"
   common_tags                                = local.common_tags
   env_suffix                                 = local.env_suffix
@@ -235,7 +240,7 @@ module "lb" {
   # 1. Native Terraform registry path 
   source = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//lb"
 
-  version = "0.4.6-three-tier-tg-type-combined" # also provides output for cw_alarms
+  version = "0.4.7-three-tier-tg-type-combined" # also provides output for cw_alarms
   # version = "0.3.6-three-tier-sub-ec2-nonawsvpc"
   # version = "0.3.6-three-tier-subnet-ec2-awsvpc"
   # version = "0.3.6-three-tier-subnet-fargate"
@@ -264,13 +269,22 @@ module "lb" {
   app_cert_wait_certificate_arn = module.acm.app_cert_wait_certificate_arn
   backend_alb_sg_id             = module.sg.backend_alb_sg_id
   frontend_alb_sg_id            = module.sg.frontend_alb_sg_id
-  pri_sub_3a_id                 = module.nat_instance.pri_sub_3a_id
-  pri_sub_4b_id                 = module.nat_instance.pri_sub_4b_id
+  # pri_sub_3a_id                 = module.nat_instance.pri_sub_3a_id
+  # pri_sub_4b_id                 = module.nat_instance.pri_sub_4b_id
+  # pri_sub_5a_id                 = module.nat_instance.pri_sub_5a_id
+  # pri_sub_6b_id                 = module.nat_instance.pri_sub_6b_id
+  pri_sub_3a_id = module.vpc.pri_sub_3a_id
+  pri_sub_4b_id = module.vpc.pri_sub_4b_id
+  pri_sub_5a_id = module.vpc.pri_sub_5a_id
+  pri_sub_6b_id = module.vpc.pri_sub_6b_id
   # pri_sub_3a_id           = module.nat.pri_sub_3a_id
   # pri_sub_4b_id           = module.nat.pri_sub_4b_id
   pub_sub_1a_id = module.vpc.pub_sub_1a_id
   pub_sub_2b_id = module.vpc.pub_sub_2b_id
   vpc_id        = module.vpc.vpc_id
+  common_tags   = local.common_tags
+  project_name  = var.project_name
+
 }
 
 
@@ -331,6 +345,11 @@ module "lb" {
 # pri_sub_4b_id           = module.nat_instance.pri_sub_4b_id
 # pri_sub_5a_id           = module.nat_instance.pri_sub_5a_id # for backend tier
 # pri_sub_6b_id           = module.nat_instance.pri_sub_6b_id
+#   pri_sub_3a_id = module.vpc.pri_sub_3a_id
+#   pri_sub_4b_id = module.vpc.pri_sub_4b_id
+#   pri_sub_5a_id = module.vpc.pri_sub_5a_id
+#   pri_sub_6b_id = module.vpc.pri_sub_6b_id
+
 # # pri_sub_5a_id           = module.nat.pri_sub_5a_id
 # # pri_sub_6b_id           = module.nat.pri_sub_6b_id
 
@@ -377,16 +396,16 @@ module "cw_alarms" {
   # Use the same SNS topic as release notifications for now so runtime alarms reach the
   # same operator inbox. If alert volume grows later, this can be split into a dedicated
   # operations topic without changing individual alarm resources again.
-  alarm_action_arns = [module.sns.release_notifications_topic_arn]
-  ok_action_arns    = [module.sns.release_notifications_topic_arn]
+  alarm_action_arns = [module.sns_notifications.release_notifications_topic_arn]
+  ok_action_arns    = [module.sns_notifications.release_notifications_topic_arn]
 }
 
-module "sns" {
+module "sns_notifications" {
   # Phase 7 notification delivery is also kept local-path based first so the SNS contract
   # can settle in this repo before the shared module is versioned and published.
   # source = "../../tf-modules/ecr-three-tier-tf-modules/modules/sns"
   source  = "gitlab.com/arsalanshaikh13/ecr-three-tier-tf-modules/aws//sns"
-  version = "0.0.23-sns-notifications"
+  version = "0.0.24-sns-notifications"
 
 
   common_tags     = local.common_tags
@@ -443,10 +462,15 @@ module "ecs_fargate" {
   ecs_task_role_arn           = module.iam.ecs_task_role_arn
   env_suffix                  = local.env_suffix
   frontend_tg_arn             = module.lb.frontend_tg_arn
-  pri_sub_3a_id               = module.nat_instance.pri_sub_3a_id # for frontend tier
-  pri_sub_4b_id               = module.nat_instance.pri_sub_4b_id
-  pri_sub_5a_id               = module.nat_instance.pri_sub_5a_id # for backend tier
-  pri_sub_6b_id               = module.nat_instance.pri_sub_6b_id
+  # pri_sub_3a_id               = module.nat_instance.pri_sub_3a_id # for frontend tier
+  # pri_sub_4b_id               = module.nat_instance.pri_sub_4b_id
+  # pri_sub_5a_id               = module.nat_instance.pri_sub_5a_id # for backend tier
+  # pri_sub_6b_id               = module.nat_instance.pri_sub_6b_id
+  pri_sub_3a_id = module.vpc.pri_sub_3a_id
+  pri_sub_4b_id = module.vpc.pri_sub_4b_id
+  pri_sub_5a_id = module.vpc.pri_sub_5a_id
+  pri_sub_6b_id = module.vpc.pri_sub_6b_id
+
   # pri_sub_5a_id           = module.nat.pri_sub_5a_id
   # pri_sub_6b_id           = module.nat.pri_sub_6b_id
   rds_db_address_arn      = module.ssm.rds_db_address_arn
@@ -461,9 +485,12 @@ module "efs" {
   common_tags            = local.common_tags
   ecs_node_backend_sg_id = module.sg.ecs_node_backend_sg_id
   env_suffix             = local.env_suffix
-  pri_sub_5a_id          = module.nat_instance.pri_sub_5a_id
-  pri_sub_6b_id          = module.nat_instance.pri_sub_6b_id
+  pri_sub_5a_id          = module.vpc.pri_sub_5a_id
+  pri_sub_6b_id          = module.vpc.pri_sub_6b_id
+  # pri_sub_5a_id          = module.nat_instance.pri_sub_5a_id
+  # pri_sub_6b_id          = module.nat_instance.pri_sub_6b_id
   # pri_sub_5a_id           = module.nat.pri_sub_5a_id
   # pri_sub_6b_id           = module.nat.pri_sub_6b_id
   vpc_id = module.vpc.vpc_id
 }
+

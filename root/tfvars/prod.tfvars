@@ -32,6 +32,9 @@ pri_sub_3a_cidr = "15.0.3.0/24"
 pri_sub_4b_cidr = "15.0.4.0/24"
 pri_sub_5a_cidr = "15.0.5.0/24"
 pri_sub_6b_cidr = "15.0.6.0/24"
+pri_sub_7a_cidr = "15.0.7.0/24"
+pri_sub_8b_cidr = "15.0.8.0/24"
+
 #private_subnets = ["subnet-ccc333", "subnet-ddd444"]
 
 

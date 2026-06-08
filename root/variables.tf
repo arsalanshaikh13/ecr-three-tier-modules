@@ -409,15 +409,7 @@ variable "pri_sub_8b_cidr" {
   type        = string
 }
 
-variable "pub_sub_3a_cidr" {
-  description = "CIDR block for public subnet 3 availability zone a cidr."
-  type        = string
-}
 
-variable "pub_sub_4b_cidr" {
-  description = "CIDR block for public subnet 4 availability zone b cidr."
-  type        = string
-}
 
 variable "ecs_network_mode_backend" {
   description = "Input variable for ecs network mode backend."

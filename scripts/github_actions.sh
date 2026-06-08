@@ -31,8 +31,12 @@
 GH_USER="arsalanshaikh13"
 REPO_NAME="ecr-three-tier-modules"
 
+
+
 # 3. Create 'production' Environment & Secrets
 # echo "Creating production env..."
+
+
 # gh api --method PUT "repos/$GH_USER/$REPO_NAME/environments/prod"
 # gh api --method PUT "repos/$GH_USER/$REPO_NAME/environments/dev"
 
@@ -67,16 +71,16 @@ REPO_NAME="ecr-three-tier-modules"
 #
 # Uncomment and run when you want to create or refresh the environment vars.
 
-set_env_var() {
-  local env_name="$1"
-  local var_name="$2"
-  local var_value="$3"
+# set_env_var() {
+#   local env_name="$1"
+#   local var_name="$2"
+#   local var_value="$3"
 
-  gh variable set "$var_name" \
-    --repo "$GH_USER/$REPO_NAME" \
-    --env "$env_name" \
-    --body "$var_value"
-}
+#   gh variable set "$var_name" \
+#     --repo "$GH_USER/$REPO_NAME" \
+#     --env "$env_name" \
+#     --body "$var_value"
+# }
 
 # # -----------------------------
 # # Required baseline variables
@@ -170,7 +174,8 @@ set_env_var() {
 # # -----------------------------------------
 # # Guardrail workflows read this only when you want prod freeze windows enforced.
 # # Example format is workflow-specific, so keep it empty until you are ready.
-# # set_env_var prod PROD_FREEZE_WINDOWS_UTC ""
+# set_env_var prod PROD_FREEZE_WINDOWS_UTC "Sat 00:00-23:59, Sun 00:00-23:59"
+# set_env_var prod PROD_FREEZE_WINDOWS_UTC "Sat 04:00-04:30"
 #
 # # -----------------------------------------------------
 # # Phase 3 telemetry-gate variables
@@ -235,15 +240,31 @@ START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # Only pass inputs you want to override -- omitted inputs use their defaults.
 
 # --- Deploy to dev (both components, default EC2/non-awsvpc) ---
+if ! gh workflow run "deploy.yml" \
+  --ref three-tier-multi-env \
+  -f action_type=deploy \
+  -f target_environment=prod \
+  -f frontend_image_strategy=build \
+  -f backend_image_strategy=build \
+  -f run_seeding=false \
+  -f default_launch_type=FARGATE \
+  -f default_network_mode=awsvpc \
+  -f release_version="v1.0.0-prod-test" \
+  -f change_ticket="testing change ticket"; then
+  echo "Failed to dispatch deploy.yml."
+  exit 1
+fi
+# # --- Deploy to dev (both components, default EC2/non-awsvpc) ---
 # if ! gh workflow run "deploy.yml" \
 #   --ref three-tier-multi-env \
 #   -f action_type=deploy \
-#   -f target_environment=dev \
+#   -f target_environment=prod \
 #   -f frontend_image_strategy=build \
 #   -f backend_image_strategy=build \
 #   -f run_seeding=false \
-#   -f default_launch_type=EC2 \
-#   -f default_network_mode=non-awsvpc ; then
+#   -f default_launch_type=FARGATE \
+#   -f default_network_mode=awsvpc ; then
+#   # -f break_glass_reason="emergency deployment for testing"; then
 #   echo "Failed to dispatch deploy.yml."
 #   exit 1
 # fi
@@ -440,7 +461,7 @@ APPROVER_USER_ID=$(gh api "users/$APPROVER_USER" --jq '.id')
 #   -F deployment_branch_policy[custom_branch_policies]=false
 
 # Optional: inspect the configured environments after setup.
-gh api "repos/$GH_USER/$REPO_NAME/environments"
+# gh api "repos/$GH_USER/$REPO_NAME/environments"
 
 # -----------------------------------------------------------------------------
 # Terraform Output -> GitHub Environment Variable Sync Helpers
