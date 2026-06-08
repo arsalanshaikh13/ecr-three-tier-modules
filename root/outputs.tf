@@ -48,5 +48,15 @@ output "release_notification_email_endpoints" {
   value       = module.sns_notifications.confirmed_email_endpoints
 }
 
+output "frontend_subnet_tag_names" {
+  description = "Comma-separated Name tags for the frontend private subnets"
+  value       = "${var.project_name}-private-subnet-3a-${local.env_suffix},${var.project_name}-private-subnet-4b-${local.env_suffix}"
+}
+
+output "backend_subnet_tag_names" {
+  description = "Comma-separated Name tags for the backend private subnets"
+  value       = "${var.project_name}-private-subnet-5a-${local.env_suffix},${var.project_name}-private-subnet-6b-${local.env_suffix}"
+}
+
 
 
